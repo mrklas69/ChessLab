@@ -8,7 +8,5 @@ Aktivní úkoly pro ChessLab. Po dokončení přesouvej do `DONE.md`.
 
 ## Drobnosti
 
-- [ ] Smazat starou složku `C:\Users\mrkla\source\ChessHub` (harness lock zmizí mimo session).
-- [ ] Rozhodnout o licenci (MIT? Apache 2.0?).
-- [ ] `.env.example` pro `STOCKFISH_PATH` / `CHESSLAB_PORT` / `CHESSLAB_DB_PATH`.
+(prázdné — všechny aktivní drobnosti hotové; viz DONE pro historii)
 

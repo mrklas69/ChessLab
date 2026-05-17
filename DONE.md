@@ -2,6 +2,20 @@
 
 Hotové úkoly. Nejnovější nahoře.
 
+## 2026-05-17 — Housekeeping: LICENSE (MIT), .env.example
+
+Drobnosti z TODO „Drobnosti":
+- **LICENSE** (MIT) v rootu. Permissive licence, standardní pro hobby Python projekty (FastAPI, requests, …). Copyright 2026 Jan Mrklas. Pro distribuci na GitHub potřebné — bez licence = všechna práva vyhrazena, nikdo nesmí legálně forkovat / přispívat.
+- **`pyproject.toml`** přidá `license = "MIT"` + `license-files = ["LICENSE"]` (PEP 639, uv 0.11+ podporuje).
+- **`.env.example`** v rootu — dokumentovaná šablona env vars používaných v kódu:
+  - `STOCKFISH_PATH` (engine.py:58)
+  - `CHESSLAB_HOST` / `CHESSLAB_PORT` (__init__.py:17-18)
+  - `CHESSLAB_DB_PATH` (db.py:34)
+- **Pozn.**: ChessLab nemá vlastní .env loader (ne dotenv-python), čte env vars přímo z procesu. User musí použít externí nástroje (dotenv-cli, direnv, IDE run config).
+- **`C:\Users\mrkla\source\ChessHub`** — už neexistoval (smazaný mimo session), task označen jako hotový bez akce.
+
+---
+
 ## 2026-05-17 — Minimax v2.8: non-capture checks v quiescence (4. sezení dne)
 
 v2.7 quiescence chytala horizon effect v **capture** sekvencích (PxQ QxP), ale slepá byla k **forced check** sekvencím (Qd1+ Re1 Qxe1#). v2.8 přidá non-capture checking moves do quiescence (v prvních 2 plies, pak už jen captures kvůli search explosion).
