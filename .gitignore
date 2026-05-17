@@ -1,0 +1,46 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info/
+
+# Virtual environments
+.venv/
+env/
+venv/
+
+# uv lockfile — diskutabilní; pro aplikaci se obvykle COMMITUJE,
+# pro library NE. ChessLab je app, takže lockfile by se commitovat MĚL.
+# Pokud bys ho commitovat nechtěl, odkomentuj řádek níže:
+# uv.lock
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Env a secrets
+.env
+.env.local
+*.secret
+
+# Logs
+*.log
+logs/
+
+# Engine binárky (Stockfish stahujeme zvlášť)
+engines/
+
+# Lokální databáze
+*.sqlite
+*.sqlite3
+*.db
+
+# Generované PGN / SVG / HTML výstupy z experimentů
+output/
+exports/

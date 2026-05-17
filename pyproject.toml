@@ -1,0 +1,23 @@
+[project]
+name = "chesslab"
+version = "0.1.0"
+description = "Osobní šachová laboratoř — lokální Python app s web UI (analýza, engine arena, Lichess import)"
+readme = "README.md"
+authors = [
+    { name = "Jan Mrklas", email = "mrklas69@gmail.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "fastapi>=0.136.1",
+    "httpx>=0.28.1",
+    "jinja2>=3.1.6",
+    "python-chess>=1.999",
+    "uvicorn[standard]>=0.47.0",
+]
+
+[project.scripts]
+chesslab = "chesslab:main"
+
+[build-system]
+requires = ["uv_build>=0.11.14,<0.12.0"]
+build-backend = "uv_build"
