@@ -1,10 +1,11 @@
-"""ChessLab Engine v2.6: Minimax + alpha-beta + endgame heuristika + quiescence.
+"""ChessLab Engine v2.7: Minimax + alpha-beta + endgame heuristika + quiescence + MVV-LVA.
 
 Negamax framework s alpha-beta pruning. Hloubka 2 plies (vidíme náš tah +
 soupeřovu odpověď), v listech **quiescence search** (pokračujeme jen v
-"neklidných" pozicích = captures, dokud nedojdeme k quiet pozici). Eval =
-material (Greedy v1 hodnoty) + check bonus + endgame king-tropism + edge
-distance pro silnější stranu v koncovce.
+"neklidných" pozicích = captures, dokud nedojdeme k quiet pozici), tahy
+seřazené přes **MVV-LVA** (silné captures první → α-β cutoffs cuttne dřív).
+Eval = material (Greedy v1 hodnoty) + check bonus + endgame king-tropism +
+edge distance pro silnější stranu v koncovce.
 
 **Motivace nad Greedy v1.** Greedy 1-ply lookahead nevidí soupeřovu odpověď.
 Konkrétní zjištění z testu 2026-05-17 (Greedy v1 vs Random, KP-vs-K koncovka):
@@ -31,25 +32,43 @@ pozicích = aktivní captures) by tohle chytl bez generálního zvýšení depth
 Standardní implementace: po dosažení depth=0 pokračuj jen v capture tazích
 až do quiet pozice. Viz `_quiescence`.
 
+**Motivace v2.7 nad v2.6.** Move ordering přes **MVV-LVA** (Most Valuable
+Victim - Least Valuable Aggressor). Alpha-beta cutoff oře větve, jakmile
+najdeme score >= beta — ale efektivita pruningu dramaticky závisí na pořadí
+prozkoumávaných tahů. Pokud silný capture (PxQ = vyhráváme dámu) projdeme
+první, dostane high score → cutoff na zbytek tahů v této vrstvě. Pokud ho
+necháme jako poslední, projdeme všechny tiché tahy zbytečně.
+
+MVV-LVA score: `victim_value * 10 - aggressor_value`. Multiplikátor 10
+zaručí, že vždy dominuje victim (PxQ=8900 > QxR=4100 > QxB=3270), aggressor
+jen rozhoduje tie-break mezi captures se stejnou obětí. Non-captures dostanou
+score 0 a jdou po všech captures.
+
+Při fixní depth 2 MVV-LVA **nezvedne sílu** (pořadí nemění best move, jen
+rychlost) — přínos uvidíme až ve v3 (depth 3) nebo s iterative deepening.
+Cílem v2.7 je čistá izolace přínosu ordering jako stavebního kamene.
+
 **Eval funkce sdílí material konstanty s Greedy v1** — Kaufman materiálové
 hodnoty + CHECK_BONUS. Endgame bonus je v2.5 specifický. Mat/pat handling
 přes negamax framework (ne přímý bonus jako Greedy).
 
-**Vědomě vyloučeno z v2.6** (každé +50-200 řádků, kazí čistou izolaci přínosu
-quiescence; viz IDEAS pro další iterace):
+**Vědomě vyloučeno z v2.7** (každé +50-200 řádků, kazí čistou izolaci přínosu
+move ordering; viz IDEAS pro další iterace):
 
   - **Checks v quiescence** — checks generují tak širokou škálu pokračování,
     že search ne vždycky terminuje rozumně rychle (classic explosion). Captures
     jsou self-limiting (figur ubývá). Checks v specialized search nodes
     plánujeme až ve v3+.
-  - **Move ordering (MVV-LVA)** — α-β bez ordering ořezává míň větví,
-    quiescence search jím získá nejvíc. Plánováno jako v2.7 (samostatná
-    izolace přínosu).
+  - **Killer moves / history heuristic** — non-capture ordering. MVV-LVA
+    řeší jen captures; quiet moves jsou v current pořadí python-chess. Killer
+    moves (pamatovat 2 tahy, které způsobily β-cutoff ve stejné depth) a
+    history heuristic (počítadlo cutoff per from-to) jsou klasická rozšíření.
   - **SEE (Static Exchange Evaluation) pruning** — quiescence aktuálně
     prozkoumá i "blbé" captures (Q×P chráněný P = ztráta dámy za pěšce).
     SEE by je pre-filtroval. Drobnost; výkon stačí.
   - **Iterative deepening + transposition table** — premature optimization
-    pro depth 2.
+    pro depth 2. ID by automaticky využila zrychlení z MVV-LVA pro jít hloub
+    do time budgetu — kandidát na v2.8/v3.
   - **Mate-distance scoring** — vrátíme ±MATE_SCORE jako pevnou hodnotu,
     search nevybírá nejkratší mat z více options. Pro depth 2 vidíme jen
     mate-in-1, takže OK.
@@ -73,7 +92,7 @@ import chess
 
 from chesslab.engines._protocol import run_uci_loop
 
-ENGINE_NAME = "ChessLab Minimax v2.6"
+ENGINE_NAME = "ChessLab Minimax v2.7"
 ENGINE_AUTHOR = "Jan Mrklas"
 
 # Hloubka v plies (= půltahů). 2 = vidíme svůj tah + soupeřovu odpověď.
@@ -142,6 +161,17 @@ _KING_PROXIMITY_BONUS_PER_SQUARE = 3
 # (Q×P P×Q × ... ne, my máme jen 1 výměnu na queen → 2 plies). Stockfish
 # defaultně používá ~6, dáváme 8 jako pojistku.
 _QUIESCENCE_MAX_PLIES = 8
+
+# === MOVE ORDERING (v2.7) ===
+#
+# MVV-LVA multiplier: victim_value × MULT - aggressor_value. Větší multiplier
+# = silnější emphasis na victim (nezáleží na aggressor, jen na tom, kolik
+# vyhrajeme). 10 je standardní hodnota — zaručí, že žádná aggressor differencí
+# nepřebije rozdíl ve victim tier (PxQ = 8900 > QxR = 4100 > QxB = 3270).
+# Aggressor ovlivňuje jen tie-break mezi captures se stejnou obětí
+# (PxN > BxN > NxN > RxN > QxN, protože "vyhrát nějakou figuru levně" je
+# obecně lepší než vyhrát ji draho — kdyby ji soupeř recaptureoval, ztrácíme míň).
+_MVV_LVA_VICTIM_MULT = 10
 
 
 def _material_balance(board: chess.Board, our_color: chess.Color) -> int:
@@ -271,6 +301,65 @@ def _evaluate_for_side_to_move(board: chess.Board) -> int:
     return score
 
 
+def _mvv_lva_score(board: chess.Board, move: chess.Move) -> int:
+    """MVV-LVA skóre pro capture move (v2.7).
+
+    Vyšší skóre = silnější capture = zkusit dřív v alpha-beta search.
+    Non-captures dostanou 0 (skončí za všemi captures při sestupném sortu).
+
+    Vzorec: `victim_value * MULT - aggressor_value`. Multiplier garantuje, že
+    rozdíl ve victim tier vždy přebije rozdíl v aggressor:
+      - PxQ (vyhrát dámu pěšcem): 900*10 - 100 = 8900
+      - QxR: 500*10 - 900 = 4100
+      - QxB: 330*10 - 900 = 2400
+      - RxN: 320*10 - 500 = 2700
+    Aggressor jen rozhoduje tie-break mezi captures se stejnou obětí (PxN
+    před BxN před QxN — vyhrát figuru levně > vyhrát ji draho, kdyby soupeř
+    recaptureoval, ztrácíme míň).
+
+    **En passant edge case**: `board.piece_at(move.to_square)` vrací None
+    pro EP capture, protože beraný pěšec stojí na *jiném* poli (vedle
+    útočníka, ne v cíli). `board.is_en_passant(move)` to detekuje → victim
+    forced na PAWN. Bez tohoto by EP capture dostal score 0 (= non-capture)
+    a propadl by za všechny ostatní captures = špatné ordering.
+    """
+    # En passant: victim je vždy PAWN, ale `piece_at(to_square)` vrátí None
+    # (beraný pěšec stojí na sousedním poli, ne v cíli tahu).
+    if board.is_en_passant(move):
+        victim_value = _PIECE_VALUES[chess.PAWN]
+    else:
+        victim_piece = board.piece_at(move.to_square)
+        if victim_piece is None:
+            # Non-capture — score 0, půjde za všemi captures.
+            return 0
+        victim_value = _PIECE_VALUES[victim_piece.piece_type]
+
+    aggressor_piece = board.piece_at(move.from_square)
+    # Legal move vždy má figuru na from_square — defenzivní fallback by
+    # ošetřil teoreticky nelegální vstup, ale legal_moves to negarantuje.
+    aggressor_value = (
+        _PIECE_VALUES[aggressor_piece.piece_type] if aggressor_piece else 0
+    )
+
+    return victim_value * _MVV_LVA_VICTIM_MULT - aggressor_value
+
+
+def _order_moves(board: chess.Board, moves) -> list[chess.Move]:
+    """Seřadí tahy sestupně dle MVV-LVA skóre (silné captures první).
+
+    Wraps python-chess move iterator (LegalMoveGenerator nebo PseudoLegal)
+    do listu — `sorted()` potřebuje materializovaný container. Pro typický
+    middlegame ~30 moves to je trivial overhead, ale ANO, materializuje to
+    legal_moves dvakrát (jednou v sortu, jednou nikoliv — generator byl by
+    šlo zachovat). KISS: list comprehension stačí.
+
+    Stable sort (Python `sorted`) zachová původní pořadí pro tahy se stejným
+    skóre — non-captures (všechny score 0) zůstanou v pořadí python-chess.
+    Mezi captures se stejným MVV-LVA score (vzácné) také stabilní.
+    """
+    return sorted(moves, key=lambda m: _mvv_lva_score(board, m), reverse=True)
+
+
 def _quiescence(board: chess.Board, alpha: int, beta: int, ply: int = 0) -> int:
     """Quiescence search — pokračuje za depth=0 jen v "neklidných" pozicích.
 
@@ -298,8 +387,10 @@ def _quiescence(board: chess.Board, alpha: int, beta: int, ply: int = 0) -> int:
     dosažení capu vrátíme stand_pat (= nejlepší dostupný odhad). Standardní
     obrana v komerčních enginech (Stockfish ~6 plies).
 
-    **Move ordering**: plain (jak python-chess vrátí). MVV-LVA = v2.7
-    (samostatná izolace přínosu).
+    **Move ordering** (v2.7): MVV-LVA na captures (silnější capture první →
+    α-β cutoff dřív). V in-check branchi seřadíme i non-captures (captures
+    půjdou first, escape captures jako "vezmu šachujícího" se velmi často
+    ukážou jako best response, brzký cutoff šetří search v escape sekvenci).
 
     Návratová hodnota: best score pro side-to-move (negamax konvence).
     """
@@ -333,12 +424,16 @@ def _quiescence(board: chess.Board, alpha: int, beta: int, ply: int = 0) -> int:
             return beta
         if stand_pat > alpha:
             alpha = stand_pat
-        moves = board.generate_legal_captures()
+        # MVV-LVA ordering captures (v2.7): silné captures první → α-β
+        # ořízne slabé captures dřív (PxQ před QxP).
+        moves = _order_moves(board, board.generate_legal_captures())
     else:
         # In check — žádný stand-pat (eval pozice neplatí jako lower bound,
         # musíme reagovat). Všechny legal moves, aby quiescence chytila i
-        # escape sekvence, které končí ziskem materiálu.
-        moves = board.legal_moves
+        # escape sekvence, které končí ziskem materiálu. MVV-LVA seřadí
+        # captures (escape přes "vezmu šachujícího" je typicky nejsilnější
+        # escape) před non-captures (king moves, blocks).
+        moves = _order_moves(board, board.legal_moves)
 
     for move in moves:
         board.push(move)
@@ -401,7 +496,10 @@ def _negamax(board: chess.Board, depth: int, alpha: int, beta: int) -> int:
         return _quiescence(board, alpha, beta)
 
     best = -math.inf
-    for move in board.legal_moves:
+    # MVV-LVA ordering (v2.7): silné captures první → α-β cutoff dřív.
+    # Při depth 2 to nezvedne sílu (pořadí nemění best move při full search),
+    # jen zrychlí — stavební kámen pro depth 3+ a iterative deepening.
+    for move in _order_moves(board, board.legal_moves):
         board.push(move)
         try:
             # Rekurze do dítěte: po pushi je na tahu soupeř. Negamax framework

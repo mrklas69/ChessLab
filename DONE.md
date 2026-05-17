@@ -2,6 +2,20 @@
 
 Hotové úkoly. Nejnovější nahoře.
 
+## 2026-05-17 — Engine v2.7: Move ordering (MVV-LVA)
+
+- **`_mvv_lva_score(board, move) -> int`** v `minimax_engine.py` — `victim_value * 10 - aggressor_value`. Multiplikátor 10 zaručí, že **rozdíl ve victim tier vždy přebije rozdíl v aggressor**: PxQ=8900 (vyhráváme dámu) > QxR=4100 > QxB=2400. Aggressor jen rozhoduje tie-break mezi captures se stejnou obětí — pro jezdce: PxN=3100 > NxN=2880 > BxN=2870 > RxN=2700 > QxN=2300 (vyhrát figuru levně > vyhrát ji draho, protože při recapture ztrácíme míň). Non-captures dostanou score 0 → půjdou za všemi captures. **En passant edge case**: `board.piece_at(move.to_square)` vrátí `None` pro EP (beraný pěšec stojí na sousedním poli), `board.is_en_passant(move)` to detekuje → victim hardcoded PAWN.
+- **`_order_moves(board, moves) -> list[Move]`** — wrap nad `sorted(reverse=True, key=mvv_lva_score)`. Stable sort zachová původní pořadí pro tahy se stejným scorem (non-captures zůstanou v pořadí python-chess).
+- **Integrace** v `_negamax` (top vrstva pro depth > 0) i `_quiescence` (oba branche: captures-only i in-check legal_moves). Root `choose_move` ordering nepotřebuje — má full window per move (žádný pruning), ordering by nezměnil výsledek.
+- **Verze bump**: `v2.6` → `v2.7`. Display name v `_KNOWN_ENGINES` + `ENGINE_NAME`. In-place upgrade — historický v2.6 baseline je v gitu commit `75b12cf`.
+- **Smoke test Aréna** (Minimax v2.7 vs Greedy v1, 20 partií, 0.05s/tah, alternace barev):
+  - **20W-0L-0D, 100 %, ≥ +636.4 Elo** (lower bound — sweep, **identický s v2.6**). Predikce splněna: **MVV-LVA při fixní depth 2 sílu nezvedne** (pořadí tahů nemění best move při full search, jen rychlost). Pro přímé měření přínosu by chtělo depth 3 nebo node-count benchmark (ne Elo).
+  - **100 % CHECKMATE** termination, stejné jako v2.6. Avg plies 59 (vs v2.6 76 — kratší match, vedlejší efekt random tie-breaku v různém pořadí, drobnost).
+  - Total time 38.9s (1.95s/game) vs v2.6 ~32s na 5/5 sweep — mizivý rozdíl, sort overhead vs pruning benefit se vyrovnají při depth 2.
+  - Vyvážený split 10W (white) + 10W (black) — engine není color-biased.
+- **Vědomě vyloučeno z v2.7** (zaznamenáno IDEAS): killer moves / history heuristic (non-capture ordering), SEE pruning (filtruje "blbé" captures Q×P chráněný P), iterative deepening + TT (kandidát na v2.8 — automaticky využije zrychlení z MVV-LVA pro jít hloub), checks v quiescence (v3+, search explosion bez SEE).
+- **Měřitelný přínos uvidíme až ve v2.8 nebo v3** — MVV-LVA je stavební kámen, ne samostatná Elo bullet. Kandidát na další iteraci: iterative deepening, který automaticky vyladí depth podle time budgetu (depth 2 jako fallback, depth 3+ kde to MVV-LVA umožní).
+
 ## 2026-05-17 — Engine v2.6: Quiescence search + root search fix
 
 - **`_quiescence(board, alpha, beta, ply=0) -> int`** v `minimax_engine.py` — captures-only quiescence search v listech minimax stromu. Stand-pat pattern (eval pozice je lower bound, hráč nemusí captureovat), beta cutoff už na stand-pat, in-check větev iteruje **všechny** legal moves (escape from check) místo jen captures (jinak by engine "stál na místě" v šachu = nelegální). Hard depth cap `_QUIESCENCE_MAX_PLIES = 8` (Stockfish ~6) — bez něj může quiescence v multi-capture exchange sequences přetéct UCI movetime budget (0.05s v Aréně) → arena timeout, partie ztracena. Při dosažení capu vrátíme stand_pat (resp. -MATE pokud in_check, defenzivní fallback).
