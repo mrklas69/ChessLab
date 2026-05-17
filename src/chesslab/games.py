@@ -18,6 +18,8 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from chesslab.chesscom import ChessComGame
+from chesslab.chesscom import fetch_user_games as fetch_chesscom_user_games
 from chesslab.db import connect
 from chesslab.lichess import LichessGame, fetch_user_games
 
@@ -96,8 +98,12 @@ INSERT OR IGNORE INTO games (
 """
 
 
-def insert_games(games: Iterable[LichessGame]) -> tuple[int, int]:
+def insert_games(games: Iterable[LichessGame | ChessComGame]) -> tuple[int, int]:
     """Insertne partie do DB. Vrátí ``(inserted, skipped_existing)``.
+
+    Přijímá oba typy importovaných her (Lichess + chess.com) — schema sloupců
+    je stejné, jen `source` field rozlišuje původ. model_dump() v Pydantic dá
+    pro oba typy identické keys → SQL bindings fungují out-of-the-box.
 
     INSERT OR IGNORE: pokud `id` už v DB existuje, statement tichý no-op
     (`cursor.rowcount == 0` ho rozliší od reálného insertu).
@@ -198,14 +204,29 @@ def latest_lichess_created_at(username: str) -> int | None:
     Lichess API, který vrátí jen novější partie (== nestažené).
 
     Filtruje per `source='lichess'`, protože ID konvence se může mezi zdroji
-    lišit (Lichess 8-char alfanumeric, chess.com numeric, ...) a nechceme
-    aby chess.com timestamp ovlivnil Lichess `since`.
+    lišit (Lichess 8-char alfanumeric, chess.com UUID) a nechceme aby
+    chess.com timestamp ovlivnil Lichess `since`.
     """
+    return _latest_created_at_for_source("lichess", username)
+
+
+def latest_chesscom_created_at(username: str) -> int | None:
+    """Analog `latest_lichess_created_at`, filtruje per `source='chesscom'`.
+
+    Pro chess.com je tu drobná sémantická lež: ukládáme `end_time*1000`, takže
+    "MAX(created_at)" reálně znamená "konec poslední partie". Pro inkrementál
+    je to fakticky správně (vše s `end_time > last_end` je nové), pro UI nezáleží.
+    """
+    return _latest_created_at_for_source("chesscom", username)
+
+
+def _latest_created_at_for_source(source: str, username: str) -> int | None:
+    """Sdílená DRY logika pro `latest_*_created_at` per zdroj."""
     with connect() as conn:
         row = conn.execute(
             "SELECT MAX(created_at) AS m FROM games "
-            "WHERE source = 'lichess' AND username = ? AND created_at IS NOT NULL",
-            (username,),
+            "WHERE source = ? AND username = ? AND created_at IS NOT NULL",
+            (source, username),
         ).fetchone()
     return row["m"] if row and row["m"] is not None else None
 
@@ -278,36 +299,40 @@ def has_classification(game_id: str) -> bool:
     return row is not None
 
 
-def import_lichess_user(
+def _run_import(
     username: str,
     max_games: int,
-    force_full: bool = False,
+    *,
+    force_full: bool,
+    fetch_fn,
+    latest_fn,
 ) -> ImportResult:
-    """Fetch partií z Lichess + insert do DB. Per-game errory neukončí celek.
+    """Sdílená import orchestrace pro libovolný zdroj (Lichess, chess.com).
 
-    Network/auth errory (HTTPStatusError, TimeoutException) propaguje volajícímu
-    — to jsou hard failures, ne 'jedna partie se nepovedla'.
+    Zodpovědnosti:
+      - Výpočet `since` (= MAX(created_at) + 1 ms pro daný zdroj, pokud
+        není `force_full`).
+      - Per-game error handling — `ValueError` v mappingu spadne do
+        `result.errors`, zbytek partií se zpracuje normálně.
+      - Hard failures (HTTPStatusError, TimeoutException) propaguje volajícímu
+        — `app.py` je převede na HTTP status kódy.
 
     Args:
-        username: Lichess username (case-insensitive).
-        max_games: horní limit počtu partií fetchovaných z API.
-        force_full: True → ignoruj `since`, fetchni celou historii (re-sync /
-            repair). Default False → inkrementální (jen partie novější než
-            poslední v DB).
-
-    Inkrementální režim: spočítá `MAX(created_at) + 1 ms` pro Lichess partie
-    tohoto usera v DB a předá to jako `since`. Lichess vrátí jen partie s
-    `createdAt > since`. Pro prvního usera (DB prázdná) se `since` neaplikuje
-    → full fetch. INSERT OR IGNORE zůstává jako safety net pro race conditions.
+        fetch_fn: callable `(username, max_games, since=) -> Iterator[Game]`.
+            Lichess i chess.com modul mají stejnou signaturu `fetch_user_games`.
+        latest_fn: callable `(username) -> int | None`, vrací MAX(created_at)
+            pro daný zdroj+username (nebo None pokud user v DB prázdný).
     """
     # Inkrementální since — default ON, lze vypnout `force_full=True`.
     since: int | None = None
     if not force_full:
-        last_ms = latest_lichess_created_at(username)
+        last_ms = latest_fn(username)
         if last_ms is not None:
-            # +1 ms aby hraniční partie (createdAt == last_ms) nepřišla znova.
+            # +1 ms aby hraniční partie (created_at == last_ms) nepřišla znova.
             # Lichess `since` je documented jako "after" → exclusive, ale +1
-            # bezpečné v každém případě.
+            # bezpečné v každém případě. Pro chess.com filtr je vyhodnocen
+            # client-side (`created_at > since`), takže +1 zaručuje strictly
+            # newer.
             since = last_ms + 1
 
     result = ImportResult(
@@ -315,12 +340,11 @@ def import_lichess_user(
         since=since,
         incremental=(since is not None),
     )
-    games_to_insert: list[LichessGame] = []
+    games_to_insert: list[LichessGame | ChessComGame] = []
 
     # Generator yielduje hru za hrou. Pokud jedna selže při mapování (ValueError
-    # v _map_to_lichess_game), zalogujeme a pokračujeme — zbytek importu to
-    # nesmí zhodit.
-    gen = fetch_user_games(username, max_games, since=since)
+    # v `_map_to_*_game`), zalogujeme a pokračujeme — zbytek importu to nesmí zhodit.
+    gen = fetch_fn(username, max_games, since=since)
     while True:
         try:
             g = next(gen)
@@ -339,3 +363,53 @@ def import_lichess_user(
         result.inserted = ins
         result.skipped_existing = skip
     return result
+
+
+def import_lichess_user(
+    username: str,
+    max_games: int,
+    force_full: bool = False,
+) -> ImportResult:
+    """Fetch partií z Lichess + insert do DB. Per-game errory neukončí celek.
+
+    Inkrementální režim: `MAX(created_at) + 1 ms` pro Lichess partie tohoto usera
+    se předá jako `since` do API. Lichess vrátí jen partie s `createdAt > since`.
+    Pro prvního usera (DB prázdná) se `since` neaplikuje → full fetch.
+    INSERT OR IGNORE zůstává safety net pro race conditions.
+
+    Args:
+        username: Lichess username (case-insensitive).
+        max_games: horní limit počtu partií fetchovaných z API.
+        force_full: True → ignoruj `since`, fetchni celou historii (re-sync).
+    """
+    return _run_import(
+        username, max_games,
+        force_full=force_full,
+        fetch_fn=fetch_user_games,
+        latest_fn=latest_lichess_created_at,
+    )
+
+
+def import_chesscom_user(
+    username: str,
+    max_games: int,
+    force_full: bool = False,
+) -> ImportResult:
+    """Fetch partií z chess.com + insert do DB. Per-game errory neukončí celek.
+
+    Inkrementální režim: na rozdíl od Lichess (server-side `since` query param)
+    chess.com nemá filter — fetch projde archivy od nejnovějšího a zastaví,
+    jakmile narazí na partii s `created_at <= since`. Méně efektivní (musíme
+    stáhnout aspoň jeden nový měsíc), ale stejný kontrakt navenek.
+
+    Args:
+        username: chess.com username (case-insensitive).
+        max_games: horní limit počtu partií fetchovaných z API.
+        force_full: True → ignoruj `since`, fetchni celou historii (re-sync).
+    """
+    return _run_import(
+        username, max_games,
+        force_full=force_full,
+        fetch_fn=fetch_chesscom_user_games,
+        latest_fn=latest_chesscom_created_at,
+    )

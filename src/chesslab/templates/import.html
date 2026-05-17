@@ -1,4 +1,5 @@
-{# Import partií z externích zdrojů. Zatím jen Lichess (public games, bez auth). #}
+{# Import partií z externích zdrojů — Lichess + chess.com. Společný UI pattern,
+   per-section handler navěšuje sdílený JS `runImport(section)`. #}
 {% extends "base.html" %}
 
 {% block title %}Import partií · ChessLab{% endblock %}
@@ -71,8 +72,8 @@ button.primary:disabled { background: #aaa; cursor: not-allowed; }
 }
 .status.error { color: #b22222; }
 
-/* === Výsledkový panel ===================================================== */
-.results { margin-top: 24px; }
+/* === Výsledkový panel (per-section, ne globální) ========================== */
+.results { margin-top: 18px; }
 .summary {
     background: #ece4c8;
     border-left: 4px solid #5a3a1a;
@@ -104,64 +105,88 @@ button.primary:disabled { background: #aaa; cursor: not-allowed; }
    (<code>data/chesslab.db</code>). Opětovný import je idempotentní —
    duplikáty se přeskočí, žádná data se nepřepíšou.</p>
 
-<div class="import-section">
+{# data-source / data-endpoint / data-default-username = identifikátory pro
+   sdílený JS handler. Per-section LS klíč: chesslab-<source>-username. #}
+<div class="import-section"
+     data-source="lichess"
+     data-endpoint="/api/import/lichess"
+     data-default-username="TirelessWoodpusher">
     <h2>Lichess</h2>
     <p style="margin: 0 0 10px; font-size: 0.9em; color: #666;">
         Public partie (bez OAuth). Limit 1–{{ hard_max_games }} partií / request.
     </p>
 
     <div class="field">
-        <label for="username">Username:</label>
-        <input type="text" id="username" placeholder="např. TirelessWoodpusher" autocomplete="off">
+        <label>Username:</label>
+        <input type="text" class="username-input" placeholder="např. TirelessWoodpusher" autocomplete="off">
     </div>
     <div class="field">
-        <label for="max-games">Max partií:</label>
-        <input type="range" id="max-games" min="1" max="{{ hard_max_games }}" step="1" value="{{ default_max_games }}">
-        <span class="value-label" id="max-games-val">{{ default_max_games }}</span>
+        <label>Max partií:</label>
+        <input type="range" class="max-games-slider" min="1" max="{{ hard_max_games }}" step="1" value="{{ default_max_games }}">
+        <span class="value-label max-games-val">{{ default_max_games }}</span>
     </div>
     <div class="field">
-        <label for="force-full">Re-sync:</label>
+        <label>Re-sync:</label>
         <label style="flex: 1; display: flex; align-items: center; gap: 6px; cursor: pointer;">
-            <input type="checkbox" id="force-full">
+            <input type="checkbox" class="force-full-check">
             <span>Force full re-sync (ignoruj poslední import, stáhni celou historii)</span>
         </label>
     </div>
 
     <div class="run-row">
-        <button class="primary" id="run-btn">Stáhnout</button>
-        <span class="status" id="status">Připraveno.</span>
+        <button class="primary run-btn">Stáhnout</button>
+        <span class="status status-msg">Připraveno.</span>
+    </div>
+
+    <div class="results" style="display: none;">
+        <div class="summary"></div>
+        <ul class="errors-list"></ul>
+        <p><a href="/games">Otevřít browser partií →</a></p>
     </div>
 </div>
 
-<div class="results" id="results" style="display: none;">
-    <div class="summary" id="summary"></div>
-    <ul class="errors-list" id="errors-list"></ul>
-    <p><a href="/games" id="open-games">Otevřít browser partií →</a></p>
+<div class="import-section"
+     data-source="chesscom"
+     data-endpoint="/api/import/chesscom"
+     data-default-username="Bete1geuse">
+    <h2>chess.com</h2>
+    <p style="margin: 0 0 10px; font-size: 0.9em; color: #666;">
+        Public partie z měsíčních archivů. Limit 1–{{ chesscom_hard_max_games }} partií / request.
+        Pomalejší než Lichess — API stahuje celé měsíce.
+    </p>
+
+    <div class="field">
+        <label>Username:</label>
+        <input type="text" class="username-input" placeholder="např. Bete1geuse" autocomplete="off">
+    </div>
+    <div class="field">
+        <label>Max partií:</label>
+        <input type="range" class="max-games-slider" min="1" max="{{ chesscom_hard_max_games }}" step="1" value="{{ chesscom_default_max_games }}">
+        <span class="value-label max-games-val">{{ chesscom_default_max_games }}</span>
+    </div>
+    <div class="field">
+        <label>Re-sync:</label>
+        <label style="flex: 1; display: flex; align-items: center; gap: 6px; cursor: pointer;">
+            <input type="checkbox" class="force-full-check">
+            <span>Force full re-sync (ignoruj poslední import, stáhni celou historii)</span>
+        </label>
+    </div>
+
+    <div class="run-row">
+        <button class="primary run-btn">Stáhnout</button>
+        <span class="status status-msg">Připraveno.</span>
+    </div>
+
+    <div class="results" style="display: none;">
+        <div class="summary"></div>
+        <ul class="errors-list"></ul>
+        <p><a href="/games">Otevřít browser partií →</a></p>
+    </div>
 </div>
 {% endblock %}
 
 {% block script %}
 <script>
-// === DOM helpery =============================================================
-const $ = (id) => document.getElementById(id);
-
-// === Slider label ============================================================
-const slider = $('max-games');
-const sliderLabel = $('max-games-val');
-slider.addEventListener('input', () => { sliderLabel.textContent = slider.value; });
-
-// === Username persistence ====================================================
-// Zapamatuj si poslední username v localStorage — větší šance, že user importuje
-// opakovaně stejný účet.
-const LS_KEY = 'chesslab-lichess-username';
-const usernameInput = $('username');
-usernameInput.value = localStorage.getItem(LS_KEY) || '';
-usernameInput.addEventListener('blur', () => {
-    if (usernameInput.value.trim()) {
-        localStorage.setItem(LS_KEY, usernameInput.value.trim());
-    }
-});
-
 // === Escape pro vykreslení error hlášek =====================================
 function escapeHtml(s) {
     return String(s)
@@ -170,67 +195,100 @@ function escapeHtml(s) {
         .replace(/>/g, '&gt;');
 }
 
-// === Run handler =============================================================
-const runBtn = $('run-btn');
-const statusEl = $('status');
-const resultsEl = $('results');
+// === Per-section setup =======================================================
+// Pro každou .import-section navěs identický handler. Sekce mají různé
+// data-source / data-endpoint, ale UI pattern + JS logika jsou stejné (DRY —
+// při přidání 3. zdroje stačí přidat HTML section, žádný nový JS).
+document.querySelectorAll('.import-section').forEach(initSection);
 
-runBtn.addEventListener('click', async () => {
-    const username = usernameInput.value.trim();
-    if (!username) {
-        statusEl.textContent = 'Zadej username.';
-        statusEl.classList.add('error');
-        return;
+function initSection(section) {
+    const source = section.dataset.source;
+    const endpoint = section.dataset.endpoint;
+    const defaultUsername = section.dataset.defaultUsername || '';
+
+    // Elementy uvnitř sekce — scoped queryselectory (= žádné globální ID kolize).
+    const usernameInput = section.querySelector('.username-input');
+    const slider = section.querySelector('.max-games-slider');
+    const sliderLabel = section.querySelector('.max-games-val');
+    const forceFullCheck = section.querySelector('.force-full-check');
+    const runBtn = section.querySelector('.run-btn');
+    const statusEl = section.querySelector('.status-msg');
+    const resultsEl = section.querySelector('.results');
+    const summaryEl = section.querySelector('.summary');
+    const errorsEl = section.querySelector('.errors-list');
+
+    // Slider label sync (input → text vedle slideru).
+    slider.addEventListener('input', () => { sliderLabel.textContent = slider.value; });
+
+    // Username persistence v localStorage — per-source klíč (oba zdroje
+    // si pamatují svůj last username separately).
+    const lsKey = `chesslab-${source}-username`;
+    usernameInput.value = localStorage.getItem(lsKey) || '';
+    if (!usernameInput.value && defaultUsername) {
+        // Pre-fill default jen pokud LS prázdný a placeholder má smysl
+        // (např. první návštěva /import). Nepřepíše user value.
+        usernameInput.placeholder = `např. ${defaultUsername}`;
     }
-    const maxGames = parseInt(slider.value, 10);
-    const forceFull = $('force-full').checked;
+    usernameInput.addEventListener('blur', () => {
+        if (usernameInput.value.trim()) {
+            localStorage.setItem(lsKey, usernameInput.value.trim());
+        }
+    });
 
-    runBtn.disabled = true;
-    statusEl.classList.remove('error');
-    statusEl.textContent = 'Stahuji…';
-    resultsEl.style.display = 'none';
-
-    // Fake progress — Lichess endpoint je sériový, nemáme stream.
-    // Pro 100 partií typicky 5-15s.
-    const startedAt = performance.now();
-    const tick = setInterval(() => {
-        const elapsed = (performance.now() - startedAt) / 1000;
-        statusEl.textContent = `Stahuji… ${elapsed.toFixed(1)}s`;
-    }, 200);
-
-    try {
-        const resp = await fetch('/api/import/lichess', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username, max_games: maxGames, force_full: forceFull }),
-        });
-        clearInterval(tick);
-
-        if (!resp.ok) {
-            const err = await resp.json().catch(() => ({ detail: resp.statusText }));
-            statusEl.textContent = `Chyba: ${err.detail || resp.statusText}`;
+    runBtn.addEventListener('click', async () => {
+        const username = usernameInput.value.trim();
+        if (!username) {
+            statusEl.textContent = 'Zadej username.';
             statusEl.classList.add('error');
             return;
         }
+        const maxGames = parseInt(slider.value, 10);
+        const forceFull = forceFullCheck.checked;
 
-        const result = await resp.json();
-        statusEl.textContent = `Hotovo za ${((performance.now() - startedAt) / 1000).toFixed(1)}s.`;
-        renderResults(result);
-    } catch (e) {
-        clearInterval(tick);
-        statusEl.textContent = `Síťová chyba: ${e.message}`;
-        statusEl.classList.add('error');
-    } finally {
-        runBtn.disabled = false;
-    }
-});
+        runBtn.disabled = true;
+        statusEl.classList.remove('error');
+        statusEl.textContent = 'Stahuji…';
+        resultsEl.style.display = 'none';
 
-function renderResults(r) {
+        // Fake progress — API je synchronní, nemáme stream.
+        const startedAt = performance.now();
+        const tick = setInterval(() => {
+            const elapsed = (performance.now() - startedAt) / 1000;
+            statusEl.textContent = `Stahuji… ${elapsed.toFixed(1)}s`;
+        }, 200);
+
+        try {
+            const resp = await fetch(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, max_games: maxGames, force_full: forceFull }),
+            });
+            clearInterval(tick);
+
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+                statusEl.textContent = `Chyba: ${err.detail || resp.statusText}`;
+                statusEl.classList.add('error');
+                return;
+            }
+
+            const result = await resp.json();
+            statusEl.textContent = `Hotovo za ${((performance.now() - startedAt) / 1000).toFixed(1)}s.`;
+            renderResults(result, summaryEl, errorsEl, resultsEl);
+        } catch (e) {
+            clearInterval(tick);
+            statusEl.textContent = `Síťová chyba: ${e.message}`;
+            statusEl.classList.add('error');
+        } finally {
+            runBtn.disabled = false;
+        }
+    });
+}
+
+// === Sdílený renderer výsledků ==============================================
+// `r` = ImportResult JSON (stejný shape pro oba zdroje).
+function renderResults(r, summaryEl, errorsEl, resultsEl) {
     // Headline = co user nejvíc zajímá: kolik NOVÝCH partií přibylo.
-    // Tři scénáře:
-    //   inserted > 0 → '+X nových partií'
-    //   inserted == 0 && fetched == 0 → 'Žádné nové partie' (typicky inkrementál)
-    //   inserted == 0 && fetched > 0 → '0 nových (vše už v DB)' (force full re-sync)
     let headline;
     if (r.inserted > 0) {
         headline = `+${r.inserted} nových partií`;
@@ -240,19 +298,17 @@ function renderResults(r) {
         headline = `0 nových (${r.skipped_existing} už v DB)`;
     }
 
-    // Mode badge — inkrementál vs full.
     const modeBadge = r.incremental
         ? `<span style="background: #d4e8d4; color: #1a4d1a; padding: 1px 8px; border-radius: 10px; font-size: 0.8em; font-weight: bold;">inkrementál</span>`
         : `<span style="background: #f4d8b8; color: #6a3a00; padding: 1px 8px; border-radius: 10px; font-size: 0.8em; font-weight: bold;">full sync</span>`;
 
-    // since timestamp jako čitelné datum (jen v inkrementál módu).
     let sinceText = '';
     if (r.incremental && r.since) {
         const d = new Date(r.since);
         sinceText = ` · od ${d.toLocaleString('cs-CZ')}`;
     }
 
-    $('summary').innerHTML = `
+    summaryEl.innerHTML = `
         <div class="headline">${escapeHtml(headline)} ${modeBadge}</div>
         <div class="meta">
             Požadováno: ${r.requested} ·
@@ -263,8 +319,7 @@ function renderResults(r) {
         </div>
     `;
 
-    const errList = $('errors-list');
-    errList.innerHTML = (r.error_messages || [])
+    errorsEl.innerHTML = (r.error_messages || [])
         .map(m => `<li>${escapeHtml(m)}</li>`)
         .join('');
 

@@ -38,7 +38,7 @@ Raw nápady / vize / nice-to-have. Z těchto vznikají úkoly do `TODO.md`, **ne
 
 ## Data
 
-- **Import partií** z chess.com API (REST), Lichess (`berserk`).
+- ~~**Import partií** z chess.com API (REST), Lichess.~~ **HOTOVO 2026-05-17**, viz DONE. Lichess přes oficiální export API (NDJSON stream, `since` query param). chess.com přes `/pub/player/{name}/games/archives` → měsíční JSON s client-side filterem. Oba inkrementální (default ON), shared `_run_import` orchestrace, oba zdroje sdílejí UI pattern přes per-section JS handler.
 - **Sjednocená DB partií** — tag-based filtry (otevírka, soupeř, výsledek, datum).
 - **PGN editor** — anotace + variace, export.
 - **Vlastní GM partie databáze** — Mega Database / TWIC import.

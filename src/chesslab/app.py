@@ -53,6 +53,10 @@ from chesslab.tournament import (
     TournamentResult,
     run_tournament,
 )
+from chesslab.chesscom import (
+    DEFAULT_MAX_GAMES as CHESSCOM_DEFAULT_MAX_GAMES,
+    HARD_MAX_GAMES as CHESSCOM_HARD_MAX_GAMES,
+)
 from chesslab.games import (
     GameSummary,
     ImportResult,
@@ -61,6 +65,7 @@ from chesslab.games import (
     get_game_pgn,
     get_move_evals,
     has_classification,
+    import_chesscom_user,
     import_lichess_user,
     list_games,
 )
@@ -163,13 +168,15 @@ def play_page(request: Request) -> HTMLResponse:
 
 @app.get("/import", response_class=HTMLResponse)
 def import_page(request: Request) -> HTMLResponse:
-    """Import partií z externích zdrojů (zatím jen Lichess)."""
+    """Import partií z externích zdrojů (Lichess + chess.com)."""
     return templates.TemplateResponse(
         request=request,
         name="import.html",
         context={
             "default_max_games": DEFAULT_MAX_GAMES,
             "hard_max_games": HARD_MAX_GAMES,
+            "chesscom_default_max_games": CHESSCOM_DEFAULT_MAX_GAMES,
+            "chesscom_hard_max_games": CHESSCOM_HARD_MAX_GAMES,
         },
     )
 
@@ -553,6 +560,63 @@ def api_import_lichess(req: LichessImportRequest) -> ImportResult:
         raise HTTPException(status_code=502, detail=f"Lichess API ({status}): {body}") from exc
     except httpx.TimeoutException as exc:
         raise HTTPException(status_code=504, detail="Lichess API timeout") from exc
+
+
+# === Import API (chess.com) ==================================================
+
+
+class ChessComImportRequest(BaseModel):
+    """Vstupní payload pro /api/import/chesscom."""
+
+    username: str = Field(
+        ...,
+        description="chess.com username (case-insensitive).",
+        min_length=1,
+        max_length=64,
+    )
+    max_games: int = Field(
+        CHESSCOM_DEFAULT_MAX_GAMES,
+        description=f"Max počet partií ke stažení (1–{CHESSCOM_HARD_MAX_GAMES}).",
+        ge=1,
+        le=CHESSCOM_HARD_MAX_GAMES,
+    )
+    force_full: bool = Field(
+        False,
+        description=(
+            "True → ignoruj last import timestamp a fetchni celou historii "
+            "(re-sync / repair). Default False = inkrementální (jen nové partie)."
+        ),
+    )
+
+
+@app.post("/api/import/chesscom", response_model=ImportResult)
+def api_import_chesscom(req: ChessComImportRequest) -> ImportResult:
+    """Stáhne partie uživatele z chess.com + uloží do DB (UPSERT, žádné duplikáty).
+
+    Synchronní endpoint. Pomalejší než Lichess endpoint pro stejný `max_games` —
+    chess.com API model nutí stahovat celé měsíční archivy (vs. Lichess single
+    stream). Pro 100 partií typicky 10–30s (závisí na hustotě hraní v posledním
+    měsíci).
+
+    Status mapping:
+      - 404: user neexistuje
+      - 429: chess.com rate limit
+      - 502: jiný HTTP error z chess.com API
+      - 504: timeout
+      - 400: validation error (špatné parametry)
+    """
+    try:
+        return import_chesscom_user(req.username, req.max_games, force_full=req.force_full)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code
+        body = exc.response.text[:200]
+        if status in (404, 429):
+            raise HTTPException(status_code=status, detail=f"chess.com API: {body}") from exc
+        raise HTTPException(status_code=502, detail=f"chess.com API ({status}): {body}") from exc
+    except httpx.TimeoutException as exc:
+        raise HTTPException(status_code=504, detail="chess.com API timeout") from exc
 
 
 # === Games API ===============================================================

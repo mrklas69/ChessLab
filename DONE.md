@@ -2,6 +2,54 @@
 
 Hotové úkoly. Nejnovější nahoře.
 
+## 2026-05-17 — chess.com import (2. sezení dne)
+
+Druhý zdroj partií vedle Lichess. API je odlišný model (dvoukrokový: archives list → měsíc), inkrementál řešíme client-side filtrem `created_at > since` (chess.com nemá `since` query param).
+
+### Backend
+
+- **Nový modul `chesscom.py`** (analog `lichess.py`):
+  - `ChessComGame(BaseModel)` se stejnou strukturou jako `LichessGame` — schema sloupců se podle zdroje nemění, jen `source` field rozlišuje.
+  - `fetch_user_games(username, max_games, since=None)` — generator s 2-krokovým flow:
+    1. `GET /pub/player/{username}/games/archives` → list URL měsíčních archivů (asc).
+    2. Pro každý měsíc `reversed(archives)`: `GET <archive_url>` → JSON `{games: [...]}`. Per-měsíc taky `reversed()` (chess.com vrací asc).
+    3. `created_at <= since` → early exit z celého fetche (předpoklad chronologického řazení).
+  - **User-Agent header** (`ChessLab/0.1 (contact: mrklas69@gmail.com)`) — chess.com neformálně vyžaduje, bez UA občas 403.
+  - **Lowercase username v URL** — chess.com `/games/archives` endpoint vrací HTTP 301 redirect z capitalized formy (`Bete1geuse` → `bete1geuse`). httpx default neredirectuje, takže lowercaseujeme již v URL (deterministické, žádná závislost na follow_redirects).
+  - **Mapping helpery:**
+    - `_to_my_result(...)` — chess.com per-color `result` (široká doména: `win`/`checkmated`/`resigned`/`timeout`/`abandoned`/`agreed`/`stalemate`/`repetition`/`insufficient`/`50move`/`timevsinsufficient`) → `win`/`loss`/`draw`. Whitelist draws (rozšiřitelný), default = loss.
+    - `_parse_opening(pgn)` — regex `[ECO "..."]` + `[ECOUrl "..."]`, slug po `/openings/` → human-readable (`Nimzowitsch-Larsen-Attack-Modern-Variation-2.Bb2-Nc6-3.e3` → `Nimzowitsch Larsen Attack Modern Variation`). Slug může mít buď `-N.` nebo `...N.` notaci (response notation u černého), regex `(?:-|\.\.\.)\d+\..*$` zvládá oboje.
+    - `_count_plies(pgn)` — parse přes `chess.pgn.read_game()` + `sum(1 for _ in game.mainline_moves())`.
+  - **Sémantická lež v `created_at`**: ukládáme `end_time * 1000` (konec partie v ms), Lichess používá začátek. Pro inkrementál stačí monotonie (vše s `end_time > last_end` je nové), pro UI cca <1h drift u blitzu. Komentář to dokumentuje.
+
+- **`games.py` refactor**:
+  - `insert_games(games: Iterable[LichessGame | ChessComGame])` — union type. Pydantic `model_dump()` dá pro oba typy stejné keys → SQL bindings fungují out-of-the-box, žádný extra mapping.
+  - **DRY orchestrace**: nový `_run_import(username, max_games, *, force_full, fetch_fn, latest_fn)` parametrizovaný callable. `import_lichess_user` a `import_chesscom_user` jsou 5-řádkové wrapery → single source of truth pro since/result/error handling.
+  - `latest_chesscom_created_at(username)` + sdílená `_latest_created_at_for_source(source, username)` helper.
+
+- **`app.py`**: nový `POST /api/import/chesscom` endpoint + `ChessComImportRequest` Pydantic model (analog Lichess). Error mapping: 404/429 propagate, jiné 4xx/5xx → 502, TimeoutException → 504.
+
+### Frontend
+
+- **`import.html` refactor na per-source pattern**:
+  - HTML: dvě `<div class="import-section" data-source="..." data-endpoint="..." data-default-username="...">` sekce. Per-section vlastní `<div class="results">` panel (uživatel může importovat z obou paralelně).
+  - JS: `document.querySelectorAll('.import-section').forEach(initSection)` — scoped query selectors uvnitř sekce (`.username-input`, `.run-btn`, atd.), bez globálních ID. Při přidání 3. zdroje stačí HTML section, žádný nový JS.
+  - LS klíče per-source: `chesslab-lichess-username` / `chesslab-chesscom-username`.
+  - Sdílený `renderResults(r, summaryEl, errorsEl, resultsEl)` (ImportResult shape je identický napříč zdroji).
+
+### Smoke test (Bete1geuse → 5 partií)
+
+- Username `Bete1geuse` (Jan Mrklas, Liberec, basic account), 39 měsíčních archivů od 07/2018 do 11/2025.
+- Import: `requested:5, fetched:5, inserted:5, since:null, incremental:false` (první import = full).
+- Inkrementál (druhé volání): `fetched:0, inserted:0, since:1762444848001, incremental:true` (= last partie end_time + 1).
+- Mapping ověřen: id (UUID), color, opponent, result (`win`/`loss`/`draw`), termination (`resigned`/`win`/`stalemate`), speed (`blitz`), variant (`chess`), opening_eco (`A04`/`A01`/`A13`/`B00`), opening_name (po slug fix čistá teorie).
+
+### Pozn.
+
+- INSERT OR IGNORE = oprava `_parse_opening` se NE projeví u existujících záznamů (test data jsme smazali manuálně + re-import). Pro reálné uživatele to bude per nový import, žádný re-process starých.
+
+---
+
 ## 2026-05-17 — UX vlna: audio v `/pgn`, per-skill Stockfish rating, inkrementální Lichess import, klikatelné klasifikační pilly
 
 Čtyři menší navazující iterace v jednom sezení — všechny UX dotahování existujících features (žádné nové subsystémy).
