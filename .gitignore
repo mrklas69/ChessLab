@@ -19,7 +19,12 @@ venv/
 # IDE / editor / agent
 .idea/
 .vscode/
-.claude/
+# Ignorujeme obsah .claude/, ALE re-include settings.json (= shared project-level
+# permission allowlist). Per-user override settings.local.json zůstane ignored.
+# Git pravidlo: musí být `.claude/*` (= soubory uvnitř), ne `.claude/` (= adresář),
+# jinak negace neúčinkuje (parent dir excluded → git skip listing).
+.claude/*
+!.claude/settings.json
 *.swp
 *.swo
 .DS_Store

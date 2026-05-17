@@ -61,6 +61,7 @@ Server běží na `http://127.0.0.1:8765`. Override portu/hostu přes env `CHESS
 **%END** (rozšíření) — vedle defaultů (docs sync, cleanup, git commit+push, memory) **navíc**:
 
 1. Zastavit dev server (KillBash background shell, nebo `Get-Process -Name uvicorn,python | Where-Object { $_.MainWindowTitle -like '*chesslab*' } | Stop-Process` — bezpečnější je tracked background shell).
+2. Spustit skill `fewer-permission-prompts` — projet transcript a navrhnout allowlist do `.claude/settings.json` pro běžné read-only Bash / MCP volání, které sezení opakovaně potvrzovala. Pokud skill nic nenajde nebo vše už je v allowlistu, jen krátce oznámit "nic nového" a pokračovat.
 
 ## Konvence
 
