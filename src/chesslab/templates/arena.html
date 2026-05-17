@@ -120,6 +120,12 @@ button.primary:disabled { background: #aaa; cursor: not-allowed; }
     font-size: 0.92em;
     color: #555;
 }
+.aggregate .rating-line {
+    font-size: 0.88em;
+    color: #5a3a1a;
+    font-family: 'Consolas', 'Courier New', monospace;
+    margin-top: 4px;
+}
 .aggregate .a-label { color: #1a4a8a; }
 .aggregate .b-label { color: #8a3a1a; }
 
@@ -266,8 +272,17 @@ function bindEngineSelect(suffix, engines, defaultEngineId) {
 
     // Naplnit options. Default selected = engine s ID = defaultEngineId,
     // jinak první (= Stockfish, pokud existuje).
+    // Pro non-skill enginy ukážeme ChessLab Elo v option labelu — uživatel hned
+    // vidí předpokládanou sílu. Pro Stockfish (skill-aware) zatím rating chybí
+    // v EngineInfo (per-skill), zobrazí se až po výběru skillu — TODO.
+    function engineOptionLabel(e) {
+        if (!e.supports_skill && e.rating != null) {
+            return `${e.name} (~${e.rating.toFixed(0)} Elo)`;
+        }
+        return e.name;
+    }
     $select.innerHTML = engines.map(e =>
-        `<option value="${e.path}" data-supports-skill="${e.supports_skill}"${e.id === defaultEngineId ? ' selected' : ''}>${e.name}</option>`
+        `<option value="${e.path}" data-supports-skill="${e.supports_skill}"${e.id === defaultEngineId ? ' selected' : ''}>${engineOptionLabel(e)}</option>`
     ).join('');
     $select.disabled = false;
 
@@ -353,6 +368,23 @@ function renderResults(result) {
         perfText = `perf rating diff: ${prefix}${sign}${result.perf_rating_diff} Elo`;
     }
 
+    // ChessLab Elo: ukážeme rating change ("1500 → 1530 (+30)") pokud máme oba
+    // before/after. Pokud some chybí (vzácné), tu sekci přeskočíme. Anchor
+    // (Stockfish skill 5) má always before === after (K=0) → diff "(0)".
+    function fmtRatingChange(before, after) {
+        if (before == null || after == null) return '?';
+        const diff = after - before;
+        const sign = diff >= 0 ? '+' : '';
+        const diffStr = `(${sign}${diff.toFixed(0)})`;
+        return `${before.toFixed(0)} → ${after.toFixed(0)} ${diffStr}`;
+    }
+    const ratingALine = (result.engine_a_rating_after != null)
+        ? `<div class="rating-line">A · ${fmtRatingChange(result.engine_a_rating_before, result.engine_a_rating_after)} (${result.engine_a_games_played} partií)</div>`
+        : '';
+    const ratingBLine = (result.engine_b_rating_after != null)
+        ? `<div class="rating-line">B · ${fmtRatingChange(result.engine_b_rating_before, result.engine_b_rating_after)} (${result.engine_b_games_played} partií)</div>`
+        : '';
+
     agg.innerHTML = `
         <div class="score-line">
             <span class="a-label">${result.engine_a_name}</span>
@@ -365,6 +397,8 @@ function renderResults(result) {
             ${perfText} ·
             čas: ${result.total_time}s (${(result.total_time / result.n_games).toFixed(1)}s/partie)
         </div>
+        ${ratingALine}
+        ${ratingBLine}
     `;
 
     // Tabulka partií. Per-game PGN download generujeme přes Blob (helper).

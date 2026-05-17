@@ -2,6 +2,39 @@
 
 Hotové úkoly. Nejnovější nahoře.
 
+## 2026-05-17 — ChessLab Elo: persistent engine ratings
+
+- **Cíl**: vidět přibližnou ELO sílu enginů (Random/Greedy/Minimax/Stockfish), ne jen perf_rating_diff per session. Hardcoded anchor + Elo update po každé aréně, persistent v SQLite, samostatná stránka /engines s žebříčkem.
+- **Schema** v `db.py` — nová tabulka `engine_ratings (engine_id PK, display_name, rating, games_played, last_updated, is_anchor)`. Engine ID konvence: skill-aware → `<basename>:<skill>` (Stockfish skill 0 a 20 = separátní ratingy, jiná síla), non-skill → `<basename>` (Random/Greedy/Minimax = jeden rating per binárka). Anchor `is_anchor=1` má fixní rating (K=0 update).
+- **Nový modul** `src/chesslab/ratings.py`:
+  - `engine_id_from_path(path, skill, supports_skill)` — generátor ID s **normalizací Stockfish basename** (oficiální binárka `stockfish-windows-x86-64-avx2.exe` musí mapovat na `stockfish:5`, jinak by anchor nebyl detekován jako anchor a propadl by na K=40). Symetricky s `display_name_for_path` registry.
+  - `engine_display_name(path, skill, supports_skill)` — '(skill N)' suffix jen pro skill-aware.
+  - `init_anchor()` — `INSERT OR IGNORE` Stockfish skill 5 = 1500. Volá se z FastAPI **lifespan** hooku (idempotentní, re-start neměnenrating).
+  - `get_rating`, `list_ratings` (sestupně podle rating), `_upsert_rating` (INSERT OR REPLACE).
+  - `elo_update(my, opp, score, k)` — FIDE vzorec `new = my + k * (score - expected)`, expected ze standardní logistiky.
+  - `_k_factor(games_played, is_anchor)` — 0 pro anchor, 40 pro `games_played < 30` (rychlá konvergence pro nový engine), 20 pro etablovaný (stability). Drží FIDE pattern.
+  - `update_ratings_from_arena(engine_a_id, engine_a_name, engine_b_id, engine_b_name, games)` — per-game Elo update, K se přepočítá po každé partii (nový engine může v rámci 30-partií batch překlopit z K=40 na K=20). Nový engine (no DB row) startuje na rating soupeře (= score 0.5 expected, partie posune správným směrem). Vrací `(EngineRating_a_after, EngineRating_b_after)` pro echo v ArenaResult.
+- **Integrace v `run_arena`**: na konci `update_ratings_from_arena` volání, ArenaResult dostal nové fields `engine_{a,b}_rating_{before,after}`, `engine_{a,b}_games_played`. Frontend zobrazí `1500 → 1530 (+30)`. Helper `supports_skill_for_path` v `engines/__init__.py` (registry lookup → bool).
+- **Endpoint** `GET /api/engines/ratings` → `list[EngineRating]` sestupně. `EngineInfo` rozšířen o `rating: float | None` + `games_played: int` (naplní se z DB pro non-skill enginy, lazy import kvůli cyklu engines ↔ ratings).
+- **Nová stránka** `/engines` + `templates/engines.html` — tabulka pořadí/název/rating/partie/datum. Anchor řádek má světlé pozadí + ⚓ glyph. Provisional engine (games_played < 30) má games count zlatě (vizuální flag low confidence). Intro panel vysvětluje "ChessLab Elo ≠ CCRL/lichess" (lokální kalibrace pro 0.05s/tah).
+- **UI integrace**:
+  - `/arena` výsledkový panel: 2 nové `.rating-line` řádky pod meta — `A · 1500 → 1530 (+30) (6 partií)`.
+  - `/arena` + `/play` engine dropdown: option labels pro non-skill enginy zobrazí `(~1450 Elo)` pokud rating existuje. Pro Stockfish (skill-aware) chybí — per-skill rating chce samostatný endpoint, viz IDEAS.
+  - `/` homepage: link na `/engines` v Features.
+- **Bug fix během smoke testu**: před fixem `engine_id_from_path('stockfish-windows-x86-64-avx2.exe', 5, True)` vracel `stockfish-windows-x86-64-avx2:5`, ale anchor seed má hardcoded `stockfish:5`. `get_rating(stockfish-windows-x86-64-avx2:5)` → None → `is_anchor=False` → K=40 → po 6 partiích Stockfish skill 5 ztratil 209 Elo z anchoru. **Po normalizaci** (`if stem.startswith("stockfish"): stem = "stockfish"`) anchor zůstává fixní 1500. Cleanup buggy duplicitních entries z DB hand-made (jednorázové, není migration).
+- **Smoke test**:
+  - Initial: 1 rating (anchor 1500).
+  - Arena Minimax v2.7 vs Stockfish skill 5 (6 partií, 0.05s/tah): Minimax 0W-6L-0D. Anchor zůstává **1500 (6 partií)** ✓, Minimax 1396 (start na opponent rating 1500, drop -104 přes 6 ztrát s K=40).
+  - Arena Greedy v1 vs Random v0 (6 partií): Greedy 3W-0L-3D (75 %). Oba neznámí → start na _FALLBACK 1200. Greedy → 1249, Random → 1151.
+  - Final žebříček: Stockfish 1500 (anchor) > Minimax 1396 > Greedy 1249 > Random 1151. Tranzitivně sedí (Minimax > Greedy > Random), ale **Minimax-Greedy diff jen 147 Elo** vs sweep 20-0-0 minimum +636 Elo. Důvod: K=40 + malé n (6) má vysokou volatilitu; po desítkách arén se rating srovná. **Důležité**: kdo chce přesnou hodnotu, musí pustit víc partií (≥30) — tehdy K klesne na 20 a rating se stabilizuje.
+  - `GET /engines` → HTTP 200 (6290 chars), tabulka se renderuje.
+- **Vědomě vyloučeno z této iterace** (zaznamenáno v IDEAS pro budoucí iterace):
+  - **Per-skill rating pro Stockfish v dropdownu** — viz IDEAS. Vyžadovalo by samostatný endpoint a JS hook na skill slider change.
+  - **Bayesian Elo / round-robin turnaj** — viz IDEAS "Engine sparring". Robustnější konvergence při menším počtu partií.
+  - **Rating chart over time** — sledovat vývoj ratingu engine přes všechny arény. Pre-history je v `games_played` count, ale per-arena snapshots chybí.
+  - **Anchor recalibration** — kdyby user změnil anchor (např. Stockfish skill 10 = 2000), celý žebříček by se posunul; aktuálně držíme jednu pevnou hodnotu. Re-anchor by chtělo "rescale all ratings proportionally".
+  - **Verze custom enginu** — ChessLab Minimax v2.6 a v2.7 sdílí ID `chesslab-minimax`, jeden rating. Pro separation by chtělo verzi v binárce name (`chesslab-minimax-v27`).
+
 ## 2026-05-17 — Klasifikace tahů (Stockfish + lichess sigmoid + cache)
 
 - **Schema** v `db.py` — nová tabulka `move_evals` (game_id, ply, eval_cp, mate_in, classification, analyzed_at, time_per_move) s composite PK `(game_id, ply)` + FK `ON DELETE CASCADE`. Idempotentní `CREATE IF NOT EXISTS` (per pattern celé schemata). Per-tah eval; ply=0 = startovní pozice, classification=NULL (žádný tah jí nepředchází). Per `INSERT OR REPLACE` upsert pattern → re-classify s jiným time_per_move přepíše záznamy.

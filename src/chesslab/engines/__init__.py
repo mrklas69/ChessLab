@@ -43,6 +43,14 @@ class EngineInfo(BaseModel):
         ...,
         description="True pokud engine má UCI option 'Skill Level' (Stockfish ano, vlastní enginy zatím ne). UI podle toho disabluje skill slider.",
     )
+    # Rating jen pro non-skill enginy (jeden rating per binárka). Skill-aware
+    # enginy (Stockfish) mají per-skill rating → fetchni přes separátní endpoint
+    # po výběru skill levelu. Pro Stockfish je tady None vždy.
+    rating: float | None = Field(
+        None,
+        description="ChessLab Elo pro non-skill enginy. None pro skill-aware (rating per skill, viz GET /api/engines/ratings).",
+    )
+    games_played: int = Field(0, description="Počet partií v ChessLab arénách (pro non-skill enginy).")
 
 
 def _scripts_dir() -> Path:
@@ -94,6 +102,25 @@ def _resolve_chesslab_engine(path: Path) -> EngineInfo | None:
     )
 
 
+def supports_skill_for_path(path: str) -> bool:
+    """True pokud engine na téhle cestě podporuje UCI option 'Skill Level'.
+
+    Logika:
+      1) Stockfish (basename začíná 'stockfish') → True.
+      2) `chesslab-*` v `_KNOWN_ENGINES` → flag z mapy.
+      3) Jinak False (neznámé enginy treatujeme defenzivně jako non-skill).
+
+    Použití: `ratings.engine_id_from_path` (skill-aware enginy mají per-skill
+    rating, non-skill jeden rating per binárka).
+    """
+    stem = Path(path).stem
+    if stem.startswith("stockfish"):
+        return True
+    if stem in _KNOWN_ENGINES:
+        return _KNOWN_ENGINES[stem][1]
+    return False
+
+
 def display_name_for_path(path: str) -> str | None:
     """Vrátí display name pro engine binárku, NEBO None pokud ho neznáme.
 
@@ -127,6 +154,11 @@ def list_available_engines() -> list[EngineInfo]:
     nabízel nefunkční volbu). Vlastní enginy se hledají v scripts dir aktivního
     venv přes glob `chesslab-*` — automaticky to chytí každý nový z [project.scripts]
     po `uv sync`.
+
+    Non-skill enginy navíc dostanou rating z DB (pokud existuje) — UI je
+    zobrazí v option label `Name (~1450 Elo, 23 partií)`. Pro skill-aware
+    enginy je rating per skill, takže ho do EngineInfo nedáváme (frontend
+    by ho stejně po výběru skillu musel fetchnout zvlášť).
     """
     engines: list[EngineInfo] = []
 
@@ -152,5 +184,17 @@ def list_available_engines() -> list[EngineInfo]:
             info = _resolve_chesslab_engine(path)
             if info is not None:
                 engines.append(info)
+
+    # Naplníme rating pro non-skill enginy (jeden rating per binárka).
+    # Lazy import — `ratings` modul importuje z `engines` (display_name_for_path),
+    # takže top-level import by způsobil cyklus.
+    from chesslab.ratings import get_rating
+    for info in engines:
+        if info.supports_skill:
+            continue  # rating per skill je dynamic, frontend si ho dotáhne zvlášť
+        rec = get_rating(info.id)
+        if rec is not None:
+            info.rating = rec.rating
+            info.games_played = rec.games_played
 
     return engines

@@ -1,0 +1,191 @@
+{# ChessLab Elo žebříček — tabulka všech enginů s persistent rating.
+   Anchor (Stockfish skill 5 = 1500) je vždy přítomný, ostatní se přidávají
+   automaticky po prvních arénách. Sort sestupně podle ratingu (silnější nahoře). #}
+{% extends "base.html" %}
+
+{% block title %}Engine ratings · ChessLab{% endblock %}
+
+{% block style %}
+.intro {
+    background: #f4f1e8;
+    border-left: 4px solid #5a3a1a;
+    padding: 14px 18px;
+    margin: 18px 0;
+    font-size: 0.92em;
+    line-height: 1.6;
+}
+.intro strong { color: #5a3a1a; }
+.intro code {
+    background: #ece4c8;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 0.95em;
+}
+
+table.engines {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.95em;
+    margin-top: 18px;
+}
+table.engines th, table.engines td {
+    text-align: left;
+    padding: 8px 12px;
+    border-bottom: 1px solid #e0d8b8;
+}
+table.engines th {
+    background: #ece4c8;
+    font-weight: normal;
+    color: #5a3a1a;
+    user-select: none;
+}
+table.engines tbody tr:hover { background: #faf6e8; }
+table.engines td.num { text-align: right; font-variant-numeric: tabular-nums; }
+table.engines td.rating {
+    font-weight: bold;
+    font-size: 1.05em;
+    font-variant-numeric: tabular-nums;
+}
+table.engines td.date {
+    font-size: 0.85em;
+    color: #666;
+    white-space: nowrap;
+}
+table.engines tr.anchor td { background: #f8f3df; }
+table.engines tr.anchor td.name::after {
+    content: " ⚓";
+    color: #c8a000;
+    font-size: 0.9em;
+}
+table.engines td.games-low {
+    color: #c8a000;  /* zlatá — provisional (málo partií, nepřesný odhad) */
+}
+.legend {
+    margin-top: 18px;
+    font-size: 0.85em;
+    color: #666;
+    line-height: 1.7;
+}
+.legend .symbol {
+    display: inline-block;
+    width: 1.4em;
+    font-weight: bold;
+}
+.status { color: #555; font-size: 0.92em; margin: 10px 0; }
+.status.error { color: #b22222; }
+.empty {
+    background: #f4f1e8;
+    border-left: 4px solid #5a3a1a;
+    padding: 18px 22px;
+    margin: 18px 0;
+    font-size: 0.95em;
+}
+{% endblock %}
+
+{% block content %}
+<h1>Engine ratings</h1>
+
+<div class="intro">
+    <strong>ChessLab Elo</strong> — lokální kalibrace pro arénu na 0.05s/tah.
+    Kotva (⚓): <code>Stockfish skill 5 = 1500</code>. Ratingy se updatují
+    klasickou FIDE Elo formulí (K=40 pro &lt;30 partií, pak K=20) po každé aréně.
+    <br><br>
+    <strong>Pozor:</strong> není to CCRL nebo lichess Elo. Stockfish full-time
+    by na CCRL měl ~3700, ale s 0.05s/tah je výrazně slabší. Pro porovnání
+    s veřejnými žebříčky se hodnota nedá použít přímo.
+</div>
+
+<div class="status" id="status"></div>
+
+<div id="empty-state" class="empty" style="display: none;">
+    <strong>Žádné ratingy zatím nejsou.</strong>
+    Spusť pár arén v <a href="/arena">/arena</a>, ratingy se přidají automaticky.
+    Po startu by tu měl být aspoň anchor (Stockfish skill 5).
+</div>
+
+<table class="engines" id="ratings-table" style="display: none;">
+    <thead>
+        <tr>
+            <th>Pořadí</th>
+            <th>Engine</th>
+            <th class="num">Rating</th>
+            <th class="num">Partie</th>
+            <th>Naposledy</th>
+        </tr>
+    </thead>
+    <tbody id="tbody"></tbody>
+</table>
+
+<div class="legend">
+    <div><span class="symbol">⚓</span> Kotva (anchor) — fixní rating, neaktualizuje se</div>
+    <div><span class="symbol" style="color: #c8a000;">●</span> Provisional (méně než 30 partií, vyšší volatilita)</div>
+</div>
+{% endblock %}
+
+{% block script %}
+<script>
+const $ = (id) => document.getElementById(id);
+
+function escapeHtml(s) {
+    if (s == null) return '';
+    return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
+function formatDate(ms) {
+    if (!ms) return '—';
+    return new Date(ms).toLocaleString('cs-CZ', {
+        dateStyle: 'short',
+        timeStyle: 'short',
+    });
+}
+
+const PROVISIONAL_THRESHOLD = 30;  // < 30 partií = provisional rating
+
+function renderRow(r, rank) {
+    const cls = r.is_anchor ? 'anchor' : '';
+    const gamesCls = (!r.is_anchor && r.games_played < PROVISIONAL_THRESHOLD)
+        ? 'num games-low' : 'num';
+    return `
+        <tr class="${cls}">
+            <td class="num">${rank}.</td>
+            <td class="name">${escapeHtml(r.display_name)}</td>
+            <td class="num rating">${r.rating.toFixed(0)}</td>
+            <td class="${gamesCls}">${r.games_played}</td>
+            <td class="date">${formatDate(r.last_updated)}</td>
+        </tr>
+    `;
+}
+
+async function loadRatings() {
+    const statusEl = $('status');
+    statusEl.classList.remove('error');
+    statusEl.textContent = 'Načítám…';
+    try {
+        const resp = await fetch('/api/engines/ratings');
+        if (!resp.ok) {
+            statusEl.textContent = `Chyba: HTTP ${resp.status}`;
+            statusEl.classList.add('error');
+            return;
+        }
+        const ratings = await resp.json();
+        statusEl.textContent = '';
+        if (ratings.length === 0) {
+            $('empty-state').style.display = 'block';
+            return;
+        }
+        // Backend už vrací sestupně podle ratingu, tady jen render.
+        const html = ratings.map((r, i) => renderRow(r, i + 1)).join('');
+        $('tbody').innerHTML = html;
+        $('ratings-table').style.display = 'table';
+    } catch (e) {
+        statusEl.textContent = `Síťová chyba: ${e.message}`;
+        statusEl.classList.add('error');
+    }
+}
+
+loadRatings();
+</script>
+{% endblock %}

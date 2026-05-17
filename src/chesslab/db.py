@@ -82,6 +82,21 @@ CREATE TABLE IF NOT EXISTS move_evals (
     PRIMARY KEY (game_id, ply),
     FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE
 );
+
+-- ChessLab Elo per engine. ID je 'stockfish:5' pro skill-aware (Stockfish skill
+-- 0-20 = 21 separátních ratingů, jiná síla = jiný rating), 'chesslab-greedy'
+-- pro custom enginy bez skill. Anchor (is_anchor=1) má fixní rating, neaktualizuje
+-- se ani po N partiích — slouží jako referenční bod pro absolutní škálu.
+-- Default anchor: Stockfish skill 5 = 1500 ChessLab Elo (NE CCRL, lokální
+-- kalibrace pro 0.05s/tah default arena time budget).
+CREATE TABLE IF NOT EXISTS engine_ratings (
+    engine_id        TEXT PRIMARY KEY,         -- 'stockfish:5', 'chesslab-minimax', …
+    display_name     TEXT NOT NULL,            -- 'Stockfish (skill 5)', 'ChessLab Minimax v2.7'
+    rating           REAL NOT NULL,            -- current Elo
+    games_played     INTEGER NOT NULL DEFAULT 0,
+    last_updated     INTEGER NOT NULL,         -- unix ms
+    is_anchor        INTEGER NOT NULL DEFAULT 0  -- 1 = fixní rating, neaktualizuje se
+);
 """
 
 

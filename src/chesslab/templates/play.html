@@ -359,8 +359,16 @@
                 return;
             }
             // Stringify engine info do data-* atributů — channel pro change handler.
+            // Pro non-skill enginy přidáme ChessLab Elo do labelu (jeden rating per binárka).
+            // Stockfish (skill-aware) má rating per skill → tady ne, zobrazí se jinde.
+            function engineLabel(e) {
+                if (!e.supports_skill && e.rating != null) {
+                    return `${e.name} (~${e.rating.toFixed(0)} Elo)`;
+                }
+                return e.name;
+            }
             $engineSelect.innerHTML = engines.map((e, i) =>
-                `<option value="${e.path}" data-supports-skill="${e.supports_skill}" data-name="${e.name}"${i === 0 ? ' selected' : ''}>${e.name}</option>`
+                `<option value="${e.path}" data-supports-skill="${e.supports_skill}" data-name="${e.name}"${i === 0 ? ' selected' : ''}>${engineLabel(e)}</option>`
             ).join('');
             $engineSelect.disabled = false;
             updateEngineSelection();

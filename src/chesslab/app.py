@@ -39,6 +39,7 @@ from chesslab.engine import (
 )
 from chesslab.engines import EngineInfo, list_available_engines
 from chesslab.classifier import get_or_classify_game
+from chesslab.ratings import EngineRating, init_anchor, list_ratings
 from chesslab.games import (
     GameSummary,
     ImportResult,
@@ -74,6 +75,9 @@ from chesslab.play import (
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     init_db()
+    # Seed anchor rating (Stockfish skill 5 = 1500). Idempotentní — re-start
+    # neměnenrating, jen vytvoří, pokud chybí (čistá DB / nová instalace).
+    init_anchor()
     yield
 
 
@@ -163,6 +167,12 @@ def games_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request=request, name="games.html")
 
 
+@app.get("/engines", response_class=HTMLResponse)
+def engines_page(request: Request) -> HTMLResponse:
+    """ChessLab Elo žebříček — rating tabulka všech enginů, kteří byli v aréně."""
+    return templates.TemplateResponse(request=request, name="engines.html")
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     """Health-check endpoint pro budoucí monitoring / deploy probes."""
@@ -177,6 +187,16 @@ def api_engines_list() -> list[EngineInfo]:
     (default volba), pak vlastní enginy abecedně.
     """
     return list_available_engines()
+
+
+@app.get("/api/engines/ratings", response_model=list[EngineRating])
+def api_engines_ratings() -> list[EngineRating]:
+    """ChessLab Elo ratingy všech enginů, kteří někdy hráli v aréně.
+
+    Seřazeno sestupně podle ratingu. Anchor (Stockfish skill 5 = 1500) je
+    vždy přítomný (seedovaný při startu).
+    """
+    return list_ratings()
 
 
 # === PGN API =================================================================

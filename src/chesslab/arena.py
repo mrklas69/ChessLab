@@ -28,7 +28,13 @@ import chess.pgn
 from pydantic import BaseModel, ConfigDict, Field
 
 from chesslab.engine import _stockfish_path
-from chesslab.engines import display_name_for_path
+from chesslab.engines import display_name_for_path, supports_skill_for_path
+from chesslab.ratings import (
+    EngineRating,
+    engine_id_from_path,
+    get_rating,
+    update_ratings_from_arena,
+)
 
 # === Konstanty ===============================================================
 
@@ -146,6 +152,24 @@ class ArenaResult(BaseModel):
 
     games: list[GameResult]
     total_time: float = Field(..., description="Wall-clock čas celé areny v sekundách.")
+
+    # ChessLab Elo per engine — before/after stav, pro UI panel "rating change".
+    # None když rating update z nějakého důvodu selhal (např. chybí anchor).
+    engine_a_rating_before: float | None = Field(
+        None,
+        description="ChessLab Elo enginu A před touto arénou (None pokud žádný předchozí rating).",
+    )
+    engine_a_rating_after: float | None = Field(
+        None,
+        description="ChessLab Elo enginu A po update z této areny.",
+    )
+    engine_a_games_played: int | None = Field(
+        None,
+        description="Celkový počet partií enginu A v ChessLab arénách (po této).",
+    )
+    engine_b_rating_before: float | None = Field(None)
+    engine_b_rating_after: float | None = Field(None)
+    engine_b_games_played: int | None = Field(None)
 
     # ConfigDict je pydantic v2 způsob konfigurace modelu. JSON serializace
     # zaokrouhluje floaty automaticky na repr — pro UI je to OK.
@@ -403,6 +427,31 @@ def run_arena(config: ArenaConfig) -> ArenaResult:
 
     score_pct = round(100.0 * score_a / config.n_games, 1) if config.n_games > 0 else 0.0
     perf_value, perf_is_bound = _perf_rating_diff(score_a, config.n_games)
+
+    # === ChessLab Elo update ====================================================
+    # Aktualizuj ratingy v DB. Bere před-arena rating jako "before", po update jako
+    # "after" — frontend si zobrazí change. Anchor (Stockfish skill 5) má K=0,
+    # takže before == after vždy.
+    supports_skill_a = supports_skill_for_path(path_a)
+    supports_skill_b = supports_skill_for_path(path_b)
+    engine_a_id = engine_id_from_path(path_a, config.engine_a.skill, supports_skill_a)
+    engine_b_id = engine_id_from_path(path_b, config.engine_b.skill, supports_skill_b)
+
+    # "Před": načti current rating (nebo None pokud engine nový, zobrazí se v UI).
+    before_a = get_rating(engine_a_id)
+    before_b = get_rating(engine_b_id)
+    rating_a_before = before_a.rating if before_a else None
+    rating_b_before = before_b.rating if before_b else None
+
+    # Update + persist v jediném volání. Vrací EngineRating po update.
+    after_a, after_b = update_ratings_from_arena(
+        engine_a_id=engine_a_id,
+        engine_a_name=name_a,
+        engine_b_id=engine_b_id,
+        engine_b_name=name_b,
+        games=games,
+    )
+
     return ArenaResult(
         engine_a_name=name_a,
         engine_b_name=name_b,
@@ -417,4 +466,10 @@ def run_arena(config: ArenaConfig) -> ArenaResult:
         perf_rating_is_bound=perf_is_bound,
         games=games,
         total_time=round(time.monotonic() - started, 2),
+        engine_a_rating_before=rating_a_before,
+        engine_a_rating_after=after_a.rating if after_a else None,
+        engine_a_games_played=after_a.games_played if after_a else None,
+        engine_b_rating_before=rating_b_before,
+        engine_b_rating_after=after_b.rating if after_b else None,
+        engine_b_games_played=after_b.games_played if after_b else None,
     )
