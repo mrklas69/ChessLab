@@ -1,0 +1,407 @@
+{# PGN viewer — šachovnice vlevo, headers + textarea + move list + analýza vpravo.
+   JS si drží stav (game, ply), reaguje na klik na tah, klávesy ←/→/Home/End
+   a tlačítko "Analyzovat pozici" (volá Stockfish přes /api/engine/analyse). #}
+{% extends "base.html" %}
+
+{% block title %}PGN viewer · ChessLab{% endblock %}
+
+{% block head %}
+<link rel="stylesheet"
+      href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css">
+{% endblock %}
+
+{% block style %}
+.layout {
+    display: grid;
+    grid-template-columns: 420px 1fr;
+    gap: 32px;
+    align-items: start;
+}
+#board { width: 420px; }
+.controls label {
+    display: block;
+    font-size: 0.9em;
+    margin-bottom: 6px;
+    color: #555;
+}
+textarea {
+    width: 100%;
+    min-height: 120px;
+    font-family: 'Consolas', 'Courier New', monospace;
+    font-size: 0.9em;
+    padding: 8px;
+    border: 1px solid #bbb;
+    border-radius: 4px;
+    box-sizing: border-box;
+}
+button {
+    padding: 8px 20px;
+    cursor: pointer;
+    background: #5a3a1a;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    font-size: 0.95em;
+    margin-top: 8px;
+}
+button:hover { background: #1a1a1a; }
+button:disabled, button:disabled:hover {
+    background: #bbb;
+    cursor: not-allowed;
+}
+.headers {
+    padding: 8px 12px;
+    background: #f4f1e8;
+    border-radius: 4px;
+    font-size: 0.9em;
+    margin-bottom: 12px;
+    min-height: 1.4em;
+}
+.headers .empty { color: #888; font-style: italic; }
+.headers .result { font-weight: bold; margin-left: 8px; }
+.moves {
+    font-family: 'Consolas', 'Courier New', monospace;
+    font-size: 0.9em;
+    line-height: 1.9;
+    max-height: 280px;
+    overflow-y: auto;
+    padding: 10px;
+    border: 1px solid #ccc;
+    background: #fafaf6;
+    border-radius: 4px;
+    margin-top: 16px;
+}
+.moves .empty { color: #888; font-style: italic; }
+.moves .move-no { color: #888; margin-right: 4px; }
+.moves .move {
+    cursor: pointer;
+    padding: 1px 5px;
+    border-radius: 3px;
+    margin-right: 4px;
+}
+.moves .move:hover { background: #e8e2d0; }
+.moves .move.active {
+    background: #5a3a1a;
+    color: white;
+    font-weight: bold;
+}
+.error {
+    color: #a00;
+    background: #fee;
+    padding: 8px 12px;
+    border: 1px solid #fbb;
+    border-radius: 4px;
+    margin-top: 8px;
+    display: none;
+}
+.nav-hint {
+    font-size: 0.8em;
+    color: #888;
+    margin-top: 8px;
+}
+.analysis {
+    margin-top: 16px;
+    padding: 12px;
+    border: 1px solid #ddd;
+    background: #fafaf6;
+    border-radius: 4px;
+}
+.analysis-result {
+    margin-top: 10px;
+    font-family: 'Consolas', 'Courier New', monospace;
+    font-size: 0.95em;
+    min-height: 1.4em;
+}
+.analysis-result .empty { color: #888; font-style: italic; }
+.analysis-result .score { font-weight: bold; font-size: 1.1em; }
+.analysis-result .score.white { color: #1a1a1a; }
+.analysis-result .score.black { color: #a00; }
+.analysis-result .meta { color: #888; font-size: 0.85em; margin-left: 12px; }
+{% endblock %}
+
+{% block content %}
+<h1>PGN viewer</h1>
+
+<div class="layout">
+    <div>
+        <div id="board"></div>
+        <div class="nav-hint">Navigace: <code>←</code> <code>→</code> <code>Home</code> <code>End</code> nebo klik na tah.</div>
+    </div>
+    <div class="controls">
+        <div class="headers" id="headers">
+            <span class="empty">(žádná partie není načtená)</span>
+        </div>
+        <label for="pgn-input">PGN partie:</label>
+        <textarea id="pgn-input"
+                  placeholder='[Event "..."]&#10;[White "..."]&#10;...&#10;&#10;1. e4 e5 2. Nf3 Nc6 ...'></textarea>
+        <button id="pgn-load">Načíst</button>
+        <div class="error" id="error"></div>
+        <div class="moves" id="moves">
+            <span class="empty">(žádné tahy)</span>
+        </div>
+        <div class="analysis">
+            <button id="analyse-btn" disabled>Analyzovat pozici (Stockfish 1s)</button>
+            <div class="analysis-result" id="analysis-result">
+                <span class="empty">(nejdřív načti partii)</span>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block script %}
+{# jQuery je tvrdá závislost chessboard.js v1 — knihovna ji vyžaduje. #}
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"></script>
+<script>
+    // === Inicializace šachovnice ============================================
+    const board = Chessboard('board', {
+        position: 'start',
+        // npm package chessboard.js neobsahuje obrázky figur (jen JS+CSS).
+        // Berem je z jsdelivr GitHub mirror — globální CDN, verze pinnutá na 1.0.0 tag.
+        pieceTheme: 'https://cdn.jsdelivr.net/gh/oakmac/chessboardjs@1.0.0/website/img/chesspieces/wikipedia/{piece}.png'
+    });
+
+    // === Stav viewer ========================================================
+    // game = poslední úspěšně rozparsovaná partie (PgnGame z backendu).
+    // ply = aktuální půltah, 0 = startpos, 1 = po 1. tahu bílého, atd.
+    const state = {
+        game: null,
+        ply: 0,
+    };
+
+    // === DOM reference ======================================================
+    const $input = document.getElementById('pgn-input');
+    const $load = document.getElementById('pgn-load');
+    const $error = document.getElementById('error');
+    const $headers = document.getElementById('headers');
+    const $moves = document.getElementById('moves');
+    const $analyseBtn = document.getElementById('analyse-btn');
+    const $analysisResult = document.getElementById('analysis-result');
+
+    // === Načtení PGN ze serveru =============================================
+    async function loadPGN() {
+        const pgn = $input.value.trim();
+        if (!pgn) {
+            showError('Vlož PGN partii do textarea.');
+            return;
+        }
+
+        try {
+            const resp = await fetch('/api/pgn/parse', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({pgn}),
+            });
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                const msg = typeof err.detail === 'string'
+                    ? err.detail
+                    : 'Chyba ' + resp.status + ' při parsování.';
+                showError(msg);
+                return;
+            }
+            const game = await resp.json();
+            if (game.moves.length === 0) {
+                showError('PGN neobsahuje žádné tahy. Zkontroluj formát.');
+                return;
+            }
+            state.game = game;
+            state.ply = 0;
+            hideError();
+            renderHeaders();
+            renderMoves();
+            updateBoard();
+            // Po načtení partie povolíme analýzu a vyresetujeme výpis.
+            $analyseBtn.disabled = false;
+            clearAnalysis();
+            // Sundáme focus z textarea, ať klávesy ←/→ fungují hned.
+            $input.blur();
+        } catch (e) {
+            showError('Selhalo volání backendu: ' + e.message);
+        }
+    }
+
+    // === Navigace mezi tahy =================================================
+    function setPly(n) {
+        if (!state.game) return;
+        const max = state.game.moves.length;
+        state.ply = Math.max(0, Math.min(max, n));
+        updateBoard();
+        updateActiveMove();
+        // Nová pozice → starý eval už nesedí, smaž ho.
+        clearAnalysis();
+    }
+
+    function updateBoard() {
+        if (!state.game) return;
+        const fen = currentFen();
+        board.position(fen);
+    }
+
+    // Aktuální FEN pozice — využívá se i pro engine analýzu.
+    function currentFen() {
+        if (!state.game) return null;
+        return state.ply === 0
+            ? state.game.starting_fen
+            : state.game.moves[state.ply - 1].fen_after;
+    }
+
+    // === Render move listu ==================================================
+    function renderMoves() {
+        const moves = state.game.moves;
+        const parts = [];
+        for (let i = 0; i < moves.length; i += 2) {
+            const moveNo = Math.floor(i / 2) + 1;
+            const white = moves[i];
+            const black = moves[i + 1];
+            parts.push(
+                '<span class="move-no">' + moveNo + '.</span>' +
+                '<span class="move" data-ply="' + white.ply + '">' + escapeHtml(white.san) + '</span>' +
+                (black
+                    ? '<span class="move" data-ply="' + black.ply + '">' + escapeHtml(black.san) + '</span>'
+                    : '')
+            );
+        }
+        $moves.innerHTML = parts.join(' ');
+
+        $moves.querySelectorAll('.move').forEach((el) => {
+            el.addEventListener('click', () => {
+                setPly(parseInt(el.dataset.ply, 10));
+            });
+        });
+        updateActiveMove();
+    }
+
+    function updateActiveMove() {
+        $moves.querySelectorAll('.move').forEach((el) => {
+            const isActive = parseInt(el.dataset.ply, 10) === state.ply;
+            el.classList.toggle('active', isActive);
+            if (isActive) {
+                el.scrollIntoView({block: 'nearest', behavior: 'smooth'});
+            }
+        });
+    }
+
+    // === Render headers =====================================================
+    function renderHeaders() {
+        const h = state.game.headers;
+        const white = (h.White && h.White !== '?') ? h.White : 'Bílý';
+        const black = (h.Black && h.Black !== '?') ? h.Black : 'Černý';
+        const date = (h.Date && h.Date !== '????.??.??') ? h.Date : '';
+        const event = (h.Event && h.Event !== '?') ? h.Event : '';
+        const result = h.Result || '*';
+
+        const parts = [escapeHtml(white) + ' – ' + escapeHtml(black)];
+        if (event) parts.push(escapeHtml(event));
+        if (date) parts.push(escapeHtml(date));
+        $headers.innerHTML = parts.join(' · ') +
+            '<span class="result">' + escapeHtml(result) + '</span>';
+    }
+
+    // === Stockfish analýza ==================================================
+    // Formátování skóre: centipawn → "+0.34" / "-1.50", mate → "+M5" / "-M3".
+    function formatScore(scoreCp, mateIn) {
+        if (mateIn !== null && mateIn !== undefined) {
+            const sign = mateIn > 0 ? '+' : '-';
+            return sign + 'M' + Math.abs(mateIn);
+        }
+        if (scoreCp === null || scoreCp === undefined) return '?';
+        const v = scoreCp / 100;
+        // toFixed(2) zaokrouhlí na 2 desetinná místa.
+        return (v >= 0 ? '+' : '') + v.toFixed(2);
+    }
+
+    async function analyse() {
+        const fen = currentFen();
+        if (!fen) return;
+
+        $analyseBtn.disabled = true;
+        $analysisResult.innerHTML = '<span class="empty">Analyzuji (~1s)...</span>';
+
+        try {
+            const resp = await fetch('/api/engine/analyse', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({fen, time: 1.0}),
+            });
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                const msg = typeof err.detail === 'string'
+                    ? err.detail
+                    : 'Chyba ' + resp.status;
+                $analysisResult.innerHTML = '<span class="empty">Chyba: ' + escapeHtml(msg) + '</span>';
+                return;
+            }
+            const r = await resp.json();
+            const scoreStr = formatScore(r.score_cp, r.mate_in);
+            // Barvíme podle znaménka — kdo má výhodu.
+            // mate_in má přednost (může být ±0 pro stalemate? Tady ne, koncové pozice
+            // backend odmítá rovnou.) Jinak score_cp.
+            const scoreVal = r.mate_in !== null ? r.mate_in : r.score_cp;
+            const cls = scoreVal >= 0 ? 'white' : 'black';
+            $analysisResult.innerHTML =
+                '<span class="score ' + cls + '">' + escapeHtml(scoreStr) + '</span>' +
+                ' Best: <strong>' + escapeHtml(r.best_move_san) + '</strong>' +
+                '<span class="meta">depth ' + r.depth + ' · ' + r.time.toFixed(1) + 's</span>';
+        } catch (e) {
+            $analysisResult.innerHTML = '<span class="empty">Chyba: ' + escapeHtml(e.message) + '</span>';
+        } finally {
+            $analyseBtn.disabled = false;
+        }
+    }
+
+    // Smaže výsledek analýzy — voláme po setPly (nová pozice = starý eval nesedí).
+    function clearAnalysis() {
+        if (!state.game) {
+            $analysisResult.innerHTML = '<span class="empty">(nejdřív načti partii)</span>';
+        } else {
+            $analysisResult.innerHTML = '<span class="empty">(klikni pro analýzu aktuální pozice)</span>';
+        }
+    }
+
+    // === Error UI ===========================================================
+    function showError(msg) {
+        $error.textContent = msg;
+        $error.style.display = 'block';
+    }
+    function hideError() {
+        $error.style.display = 'none';
+    }
+
+    // === Klávesnice =========================================================
+    document.addEventListener('keydown', (e) => {
+        const tag = document.activeElement?.tagName;
+        if (tag === 'TEXTAREA' || tag === 'INPUT') return;
+        if (!state.game) return;
+
+        switch (e.key) {
+            case 'ArrowLeft':  setPly(state.ply - 1); e.preventDefault(); break;
+            case 'ArrowRight': setPly(state.ply + 1); e.preventDefault(); break;
+            case 'Home':       setPly(0);             e.preventDefault(); break;
+            case 'End':        setPly(state.game.moves.length); e.preventDefault(); break;
+        }
+    });
+
+    // === Helpery ============================================================
+    function escapeHtml(s) {
+        return String(s)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    // === Bind ===============================================================
+    $load.addEventListener('click', loadPGN);
+    $analyseBtn.addEventListener('click', analyse);
+    // Ctrl+Enter v textarea = load (rychlejší než klikat).
+    $input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+            e.preventDefault();
+            loadPGN();
+        }
+    });
+</script>
+{% endblock %}

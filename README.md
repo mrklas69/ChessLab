@@ -12,7 +12,10 @@ Osobní šachová laboratoř — lokální Python aplikace s webovým UI, která
 
 ## Co umí
 
-Zatím skeleton — placeholder homepage, OpenAPI dokumentace na `/docs`, health endpoint.
+- **Rozcestník** na `/` — homepage s odkazy na features.
+- **PGN viewer** na `/pgn` — vlož PGN, prohlížej tahy (klávesy ←/→/Home/End, klik na tah, Ctrl+Enter = Load), šachovnice se synchronizuje.
+- **Stockfish analýza** v PGN vieweru — tlačítko spustí analýzu aktuální pozice (1s budget): eval v centipawnech / mate + best move + depth.
+- **OpenAPI dokumentace** na `/docs`, health endpoint na `/health`.
 
 Roadmapa viz [TODO.md](TODO.md) a [IDEAS.md](IDEAS.md).
 

@@ -2,6 +2,18 @@
 
 Hotové úkoly. Nejnovější nahoře.
 
+## 2026-05-17 — PGN viewer + Stockfish analýza (textový výpis)
+
+- **PGN viewer end-to-end** (TODO → DONE):
+  - Backend: `chesslab.pgn.parse_pgn` + `POST /api/pgn/parse` (PGN → headers + lineární mainline tahy s FEN po každém půltahu).
+  - Jinja2 templates: `base.html` (sdílený layout), `index.html` (rozcestník — nahradil placeholder homepage), `pgn.html` (chessboard.js z CDN, textarea, move list, klávesy ←/→/Home/End, Ctrl+Enter = Load, klikatelné tahy).
+  - Figury z jsdelivr GitHub mirror (`cdn.jsdelivr.net/gh/oakmac/chessboardjs@1.0.0/website/img/chesspieces/wikipedia/`) — npm package chessboard.js figury **neobsahuje**, jen JS+CSS.
+- **Stockfish analýza** (částečně — textový výpis hotov, vizuální komponenty v TODO):
+  - `chesslab.engine.analyse_fen` (spawn-per-request přes `SimpleEngine.popen_uci` v `with` bloku — auto-cleanup, žádný leak procesů).
+  - `POST /api/engine/analyse` — FEN + time (0.1–10s) → eval (cp / mate) + best move (UCI+SAN) + depth.
+  - UI v `pgn.html`: tlačítko „Analyzovat pozici (Stockfish 1s)", barevně rozlišený výpis (kdo má výhodu), auto-clear při změně tahu.
+- `.claude/` přidáno do `.gitignore` (lokální Claude Code metadata, nepatří do repa).
+
 ## 2026-05-17 — Bootstrap projektu
 
 - Diskuze konceptu, vymezení scope (online multiplayer mimo scope, focus na analýzu + engine arena + Lichess API).

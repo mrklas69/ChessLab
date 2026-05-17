@@ -1,0 +1,29 @@
+{# Homepage = rozcestník na všechny features. #}
+{% extends "base.html" %}
+
+{% block title %}ChessLab v{{ version }}{% endblock %}
+
+{% block content %}
+<h1>♔ ChessLab <small class="version">v{{ version }}</small></h1>
+
+<p>Osobní šachová laboratoř — lokální Python app pro analýzu partií, hraní proti enginu
+a engine arenu. Backend FastAPI, frontend vanilla JS + chessboard.js.</p>
+
+<h2>Features</h2>
+<ul>
+    <li><a href="/pgn">PGN viewer</a> — načtení partie, navigace tahů.</li>
+    <li><a href="/docs">API dokumentace</a> — OpenAPI/Swagger UI pro testování endpointů.</li>
+</ul>
+
+<h2>Brzy přijde</h2>
+<ul>
+    <li>Stockfish analýza (eval bar, graf hodnocení)</li>
+    <li>Hraní proti UCI enginu</li>
+    <li>Engine arena (engine vs. engine, ELO tabulka)</li>
+    <li>Import partií z Lichess API</li>
+</ul>
+
+<p style="margin-top: 3em; font-size: 0.85em; color: #888;">
+    Repo: <a href="https://github.com/mrklas69/ChessLab">github.com/mrklas69/ChessLab</a>
+</p>
+{% endblock %}

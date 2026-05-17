@@ -1,0 +1,49 @@
+{# Společný layout pro všechny stránky ChessLab.
+   Bloky: title, head (extra <link>/<meta>), style (extra CSS), content, script. #}
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}ChessLab{% endblock %}</title>
+    <style>
+        /* Základní stylování — sdílené napříč všemi stránkami. */
+        body {
+            font-family: Georgia, serif;
+            max-width: 960px;
+            margin: 40px auto;
+            padding: 0 16px;
+            color: #1a1a1a;
+            line-height: 1.5;
+        }
+        h1 { border-bottom: 2px solid #1a1a1a; padding-bottom: 8px; }
+        h2 { margin-top: 1.8em; }
+        a { color: #5a3a1a; }
+        a:hover { color: #1a1a1a; }
+        nav.crumbs {
+            font-size: 0.9em;
+            margin-bottom: 1.5em;
+            color: #777;
+        }
+        nav.crumbs a { text-decoration: none; }
+        code {
+            background: #f4f1e8;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 0.95em;
+        }
+        small.version { font-weight: normal; color: #888; font-size: 0.6em; }
+        {% block style %}{% endblock %}
+    </style>
+    {% block head %}{% endblock %}
+</head>
+<body>
+    <nav class="crumbs">
+        <a href="/">♔ ChessLab</a> ·
+        <a href="/docs">/docs</a> ·
+        <a href="/health">/health</a>
+    </nav>
+    {% block content %}{% endblock %}
+    {% block script %}{% endblock %}
+</body>
+</html>

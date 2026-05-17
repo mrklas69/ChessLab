@@ -16,9 +16,10 @@ venv/
 # Pokud bys ho commitovat nechtěl, odkomentuj řádek níže:
 # uv.lock
 
-# IDE / editor
+# IDE / editor / agent
 .idea/
 .vscode/
+.claude/
 *.swp
 *.swo
 .DS_Store
