@@ -34,9 +34,6 @@ Thumbs.db
 *.log
 logs/
 
-# Engine binárky (Stockfish stahujeme zvlášť)
-engines/
-
 # Lokální databáze
 *.sqlite
 *.sqlite3

@@ -5,10 +5,10 @@ Raw nápady / vize / nice-to-have. Z těchto vznikají úkoly do `TODO.md`, **ne
 ## Engine
 
 - **Vlastní šachový engine v Pythonu** — minimax + alpha-beta, evaluation function, postupné iterativní zlepšování. Cílem je experimentování / učení, ne konkurovat Stockfishi.
+- **v2 Minimax depth 2 + alpha-beta** — konkrétní motivace z testu Greedy v1 vs Random (2026-05-17): Greedy občas neopromuje pěšec v KP-vs-K koncovce → INSUFFICIENT_MATERIAL remíza. Příčina: 1-ply lookahead nevidí, že pěšec nechaný v ohrožení může být vzat next move. Greedy hodnotí všechny pěšcové tahy stejně (+100 cp = pěšec pořád na šachovnici), random tie-break ho tlačí ke králi místo k promoci. Minimax 2-ply by tohle vyřešil (vidí Random response, který by mohl pěšec vzít → eval -100 → preferuje bezpečné postupy). Očekávaný skok: +500 Elo.
 - **Engine sparring** — turnaj N enginů, round-robin, ELO výpočet (Bayesian / linear regression). (Areny 1v1 hotové, turnaj = další krok.)
 - **Opening book** — DB otevírkové teorie (.bin Polyglot, nebo vlastní z partií).
 - **NNUE eval** v Python implementaci (velmi ambiciózní, jen pokud Python výkon nebude blokátor).
-- **Arena: defaultní vyrovnaný matchup** — místo skill 5 vs 15 (vždy 0%/100%, perf rating N/A) zvážit default např. 5 vs 8 (vyrovnanější, perf rating dá smysl už od první spuštění). Diskuse: demonstrace převahy vs. užitečnost metriky.
 - **Arena: live progress** — místo fake odhadu času streamovat per-game výsledky přes SSE. Pro N > 10 by user získal feedback dřív než po 60s.
 
 ## Analýza

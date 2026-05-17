@@ -37,6 +37,20 @@
     color: #1a1a1a;
 }
 .settings input[type="checkbox"] { margin: 0 4px 0 0; vertical-align: middle; }
+.settings select {
+    padding: 3px 6px;
+    margin: 0 0 0 4px;
+    font-family: inherit;
+    font-size: 0.95em;
+    background: #fff;
+    border: 1px solid #c0b890;
+    border-radius: 3px;
+    vertical-align: middle;
+}
+/* Disabled state — engine bez Skill Level option (visual: dimmed slider + label).
+   Použije se přidáním třídy .skill-disabled na #skill-wrap. */
+#skill-wrap.skill-disabled { opacity: 0.4; }
+#skill-wrap.skill-disabled input { pointer-events: none; }
 
 /* === Layout: eval-bar + board (vlevo) | sidebar (vpravo) =================== */
 .layout {
@@ -183,16 +197,23 @@
 {% endblock %}
 
 {% block content %}
-<h1>Hra proti Stockfish</h1>
+<h1>Hra proti enginu</h1>
 
 {# === Settings panel (nahoře, vždy viditelné) =========================== #}
 <div class="settings">
+    <span>
+        <label for="engine">Engine:</label>
+        {# Naplní se z /api/engines/list při load. Default option "Načítám…" se nahradí. #}
+        <select id="engine" disabled>
+            <option value="">Načítám…</option>
+        </select>
+    </span>
     <span>
         <label>Barva:</label>
         <label><input type="radio" name="color" value="w" checked>Bílý</label>
         <label><input type="radio" name="color" value="b">Černý</label>
     </span>
-    <span>
+    <span id="skill-wrap">
         <label for="skill">Skill:</label>
         <input type="range" id="skill" min="{{ skill_min }}" max="{{ skill_max }}" value="{{ skill_default }}">
         <span class="value-label" id="skill-val">{{ skill_default }}</span>
@@ -288,6 +309,14 @@
         gameOver: false,
         // Aktivní fetch enginu (Analyse pro eval) — kvůli rychlému ovládání zruším.
         analysisAbort: null,
+        // Display name aktuálně vybraného enginu — pro "X: <move>" v last-move textu.
+        // Updatuje se ze selectu (změna) a z response (po startu, kde backend zachytil
+        // real name z UCI handshake — např. 'Stockfish 16.1 by ...').
+        engineName: 'Engine',
+        // Vybraný engine_path pro odeslání do /api/play/start.
+        enginePath: null,
+        // True pokud vybraný engine má Skill Level option (Stockfish ano, Random ne).
+        engineSupportsSkill: true,
     };
 
     // === DOM ref ============================================================
@@ -300,8 +329,10 @@
     const $resignBtn = document.getElementById('resign-btn');
     const $analyseGameBtn = document.getElementById('analyse-game-btn');
     const $downloadBtn = document.getElementById('download-btn');
+    const $engineSelect = document.getElementById('engine');
     const $skill = document.getElementById('skill');
     const $skillVal = document.getElementById('skill-val');
+    const $skillWrap = document.getElementById('skill-wrap');
     const $thinkTime = document.getElementById('think-time');
     const $thinkTimeVal = document.getElementById('think-time-val');
     const $showEval = document.getElementById('show-eval');
@@ -310,6 +341,47 @@
     const $evalBarWhite = document.getElementById('eval-bar-white');
     const $evalBarText = document.getElementById('eval-bar-text');
     const $arrow = document.getElementById('best-move-arrow');
+
+    // === Engine list (fetch při load + onChange) ============================
+    // Načteme dostupné enginy z backendu a naplníme dropdown. Po fetchi nastavíme
+    // state.engineName/Path/SupportsSkill podle defaultní (= první) volby.
+    // Při změně selectu updatujeme state a disable/enable skill slider.
+    async function loadEngines() {
+        try {
+            const resp = await fetch('/api/engines/list');
+            if (!resp.ok) {
+                $engineSelect.innerHTML = '<option value="">(chyba ' + resp.status + ')</option>';
+                return;
+            }
+            const engines = await resp.json();
+            if (engines.length === 0) {
+                $engineSelect.innerHTML = '<option value="">(žádný engine nenalezen)</option>';
+                return;
+            }
+            // Stringify engine info do data-* atributů — channel pro change handler.
+            $engineSelect.innerHTML = engines.map((e, i) =>
+                `<option value="${e.path}" data-supports-skill="${e.supports_skill}" data-name="${e.name}"${i === 0 ? ' selected' : ''}>${e.name}</option>`
+            ).join('');
+            $engineSelect.disabled = false;
+            updateEngineSelection();
+        } catch (e) {
+            $engineSelect.innerHTML = '<option value="">(síťová chyba)</option>';
+        }
+    }
+
+    function updateEngineSelection() {
+        const opt = $engineSelect.options[$engineSelect.selectedIndex];
+        if (!opt || !opt.value) return;
+        state.enginePath = opt.value;
+        state.engineName = opt.dataset.name || 'Engine';
+        // dataset string → bool. 'true'/'false' přes ===.
+        state.engineSupportsSkill = opt.dataset.supportsSkill === 'true';
+        // Visual: dimnout skill slider pokud nedělá nic (engine ho ignoruje).
+        $skillWrap.classList.toggle('skill-disabled', !state.engineSupportsSkill);
+    }
+
+    $engineSelect.addEventListener('change', updateEngineSelection);
+    loadEngines();
 
     // === Inicializace chessboard.js =========================================
     // draggable=true, onDrop handler validuje tah přes backend.
@@ -398,13 +470,24 @@
         const skill = parseInt($skill.value, 10);
         const thinkTime = parseFloat($thinkTime.value);
 
+        // Sanity check — bez vybraného enginu nelze startovat.
+        if (!state.enginePath) {
+            showError('Žádný engine není vybrán.');
+            return;
+        }
+
         hideError();
         $newGameBtn.disabled = true;
         try {
             const resp = await fetch('/api/play/start', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({color, skill, think_time: thinkTime}),
+                body: JSON.stringify({
+                    color,
+                    skill,
+                    think_time: thinkTime,
+                    engine_path: state.enginePath,
+                }),
             });
             if (!resp.ok) { await showFetchError(resp); return; }
             const data = await resp.json();
@@ -524,9 +607,11 @@
         else if (data.turn !== data.player_color) $status.classList.add('thinking');
 
         // Poslední tah(y) — pro UI feedback "co se právě stalo".
+        // Engine label = name ze selectu (vybral uživatel). Backend ho nezrcadlí
+        // v response, tak ho čteme z client state.
         const parts = [];
         if (data.last_player_move) parts.push('Ty: ' + data.last_player_move.san);
-        if (data.last_engine_move) parts.push('Stockfish: ' + data.last_engine_move.san);
+        if (data.last_engine_move) parts.push(state.engineName + ': ' + data.last_engine_move.san);
         $lastMove.textContent = parts.join(' · ');
 
         // PGN tahy v sidebaru.

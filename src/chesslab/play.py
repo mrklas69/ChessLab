@@ -88,6 +88,13 @@ class GameState:
     board: chess.Board = field(default_factory=chess.Board)
     # engine = None znamená "žádná hra ještě nezačala" (po startu serveru).
     engine: chess.engine.SimpleEngine | None = None
+    # Display name z UCI handshake (`engine.id["name"]`). Použije se v status
+    # textu („X přemýšlí…") a v PGN White/Black headeru.
+    engine_name: str = "Engine"
+    # True pokud engine má UCI option 'Skill Level' (Stockfish ano, custom enginy
+    # zatím ne). Drží jednak, jestli configure skill (v start_game), jednak
+    # jestli přidat suffix '(skill N)' do PGN headeru.
+    engine_supports_skill: bool = False
     player_color: chess.Color = chess.WHITE
     skill: int = SKILL_DEFAULT
     think_time: float = field(default_factory=lambda: default_think_time(SKILL_DEFAULT))
@@ -129,7 +136,9 @@ def _status_text() -> str:
         color = "bílý" if _state.board.turn == chess.WHITE else "černý"
         check = " (ŠACH!)" if _state.board.is_check() else ""
         return f"Tvůj tah ({color}){check}"
-    return "Stockfish přemýšlí…"
+    # Engine name přijde z UCI handshake (`engine.id["name"]`) — pro Stockfish
+    # to bude něco jako 'Stockfish 16.1 by ...', pro vlastní engine viz ENGINE_NAME.
+    return f"{_state.engine_name} přemýšlí…"
 
 
 def _pgn_result() -> str:
@@ -159,13 +168,18 @@ def _pgn_full(skill: int, player_color: chess.Color) -> str:
     """Kompletní PGN se Seven Tag Roster — pro download."""
     game = chess.pgn.Game.from_board(_state.board)
     player_white = player_color == chess.WHITE
+    # Engine display name pro PGN — suffix '(skill N)' přidáme jen pokud engine
+    # Skill Level skutečně podporuje (Stockfish ano, vlastní enginy ne).
+    engine_label = _state.engine_name
+    if _state.engine_supports_skill:
+        engine_label = f"{engine_label} (skill {skill})"
     # Seven Tag Roster v pořadí předepsaném PGN standardem (Event, Site, Date, Round, White, Black, Result).
     game.headers["Event"] = "Casual Game"
     game.headers["Site"] = "ChessLab (localhost)"
     game.headers["Date"] = datetime.date.today().strftime("%Y.%m.%d")
     game.headers["Round"] = "-"
-    game.headers["White"] = "Player" if player_white else f"Stockfish (skill {skill})"
-    game.headers["Black"] = f"Stockfish (skill {skill})" if player_white else "Player"
+    game.headers["White"] = "Player" if player_white else engine_label
+    game.headers["Black"] = engine_label if player_white else "Player"
     game.headers["Result"] = _pgn_result()
     exp = chess.pgn.StringExporter(headers=True, comments=False, variations=False)
     return game.accept(exp)
@@ -243,15 +257,24 @@ def start_game(
     color: chess.Color,
     skill: int,
     think_time: float,
+    engine_path: str | None = None,
 ) -> PlayStateResponse:
     """Inicializuje novou hru — restart enginu, reset boardu, configure skill.
 
     Pokud hráč hraje za černého, engine táhne hned na začátku (last_engine_move
     v odpovědi). Jinak je hráč na tahu a engine čeká.
 
+    Args:
+        engine_path: cesta k UCI binárce. None → default Stockfish (`STOCKFISH_PATH`).
+            Skill Level se aplikuje jen pokud engine option `Skill Level` podporuje
+            (Stockfish ano, vlastní ChessLab enginy zatím ne — tiše se přeskočí).
+
     Raises:
-        FileNotFoundError: pokud Stockfish binárka neexistuje.
+        FileNotFoundError: pokud Stockfish binárka neexistuje (default path) nebo
+            pokud zadaná `engine_path` na disku není.
     """
+    from pathlib import Path  # lokální import — používáme jen tady (validace cesty).
+
     with _state.lock:
         _quit_engine_silently()
 
@@ -261,12 +284,28 @@ def start_game(
         _state.skill = skill
         _state.think_time = think_time
 
-        # Spawn engine subprocess. Path resolver hodí FileNotFoundError, který
-        # endpoint převede na HTTP 500 (server-side config problém).
-        sf_path = _stockfish_path_or_raise()
-        _state.engine = chess.engine.SimpleEngine.popen_uci(sf_path)
-        # Stockfish UCI option "Skill Level" — int 0..20.
-        _state.engine.configure({"Skill Level": skill})
+        # Resolve path: None / prázdný string → default Stockfish.
+        if engine_path is None or not engine_path.strip():
+            path = _stockfish_path_or_raise()
+        else:
+            path = engine_path
+            if not Path(path).exists():
+                raise FileNotFoundError(f"Engine binárka neexistuje: {path}")
+
+        # Spawn engine subprocess.
+        _state.engine = chess.engine.SimpleEngine.popen_uci(path)
+
+        # Zachytit display name z UCI handshake (`engine.id` po popen_uci je dict
+        # s 'name' a 'author', pokud je engine poslal). Pro Stockfish to bude
+        # např. 'Stockfish 16.1 by ...'. Fallback 'Engine' pro UCI binárky, které
+        # `id name` neposílají (vzácné, ale defenzivně).
+        _state.engine_name = _state.engine.id.get("name", "Engine")
+
+        # Skill Level configure jen pokud engine UCI option má (Stockfish ano,
+        # vlastní enginy ne). Stejný pattern jako arena._maybe_configure_skill.
+        _state.engine_supports_skill = "Skill Level" in _state.engine.options
+        if _state.engine_supports_skill:
+            _state.engine.configure({"Skill Level": skill})
 
         # Hraje-li hráč černého, engine táhne první (otevírá hru).
         engine_move: MoveInfo | None = None

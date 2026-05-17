@@ -47,6 +47,19 @@
 .field input[type="range"] {
     flex: 1;
 }
+.field select {
+    flex: 1;
+    padding: 4px 6px;
+    font-family: inherit;
+    font-size: 0.9em;
+    background: #fff;
+    border: 1px solid #c0b890;
+    border-radius: 3px;
+}
+/* Dim skill slider když vybraný engine 'Skill Level' option nemá (Random / Greedy).
+   Přidá se třída .skill-disabled na .field obsahující slider. */
+.field.skill-disabled { opacity: 0.4; }
+.field.skill-disabled input { pointer-events: none; }
 .field .value-label {
     flex: 0 0 50px;
     text-align: right;
@@ -151,10 +164,14 @@ table.games a.dl:hover { text-decoration: underline; }
     <div class="engine-box">
         <h3>Engine A</h3>
         <div class="field">
+            <label for="engine-a">Engine:</label>
+            <select id="engine-a" disabled><option value="">Načítám…</option></select>
+        </div>
+        <div class="field">
             <label for="path-a">Path:</label>
             <input type="text" id="path-a" value="{{ default_stockfish_path }}">
         </div>
-        <div class="field">
+        <div class="field" id="skill-a-field">
             <label for="skill-a">Skill:</label>
             <input type="range" id="skill-a" min="{{ skill_min }}" max="{{ skill_max }}" step="1" value="{{ skill_default_a }}">
             <span class="value-label" id="skill-a-val">{{ skill_default_a }}</span>
@@ -164,10 +181,14 @@ table.games a.dl:hover { text-decoration: underline; }
     <div class="engine-box">
         <h3>Engine B</h3>
         <div class="field">
+            <label for="engine-b">Engine:</label>
+            <select id="engine-b" disabled><option value="">Načítám…</option></select>
+        </div>
+        <div class="field">
             <label for="path-b">Path:</label>
             <input type="text" id="path-b" value="{{ default_stockfish_path }}">
         </div>
-        <div class="field">
+        <div class="field" id="skill-b-field">
             <label for="skill-b">Skill:</label>
             <input type="range" id="skill-b" min="{{ skill_min }}" max="{{ skill_max }}" step="1" value="{{ skill_default_b }}">
             <span class="value-label" id="skill-b-val">{{ skill_default_b }}</span>
@@ -231,6 +252,53 @@ bindSlider('skill-b', 'skill-b-val', v => v);
 bindSlider('n-games', 'n-games-val', v => v);
 bindSlider('time-per-move', 'time-per-move-val', v => Number(v).toFixed(2) + 's');
 
+// === Engine dropdowns =======================================================
+// Pro každý engine box (A, B) je dropdown nad path inputem. Při změně dropdownu
+// naplní se path input cestou + skill slider se dim/enable podle supports_skill.
+// Path input zůstává editovatelný — uživatel může zadat custom binárku mimo
+// discovery (např. pre-released Stockfish nebo cizí UCI engine).
+//
+// Pattern (suffix 'a' / 'b'): jedna funkce pro oba boxy.
+function bindEngineSelect(suffix, engines, defaultEngineId) {
+    const $select = $(`engine-${suffix}`);
+    const $path = $(`path-${suffix}`);
+    const $skillField = $(`skill-${suffix}-field`);
+
+    // Naplnit options. Default selected = engine s ID = defaultEngineId,
+    // jinak první (= Stockfish, pokud existuje).
+    $select.innerHTML = engines.map(e =>
+        `<option value="${e.path}" data-supports-skill="${e.supports_skill}"${e.id === defaultEngineId ? ' selected' : ''}>${e.name}</option>`
+    ).join('');
+    $select.disabled = false;
+
+    const applySelection = () => {
+        const opt = $select.options[$select.selectedIndex];
+        if (!opt || !opt.value) return;
+        $path.value = opt.value;
+        const supportsSkill = opt.dataset.supportsSkill === 'true';
+        $skillField.classList.toggle('skill-disabled', !supportsSkill);
+    };
+    $select.addEventListener('change', applySelection);
+    applySelection();
+}
+
+async function loadEngines() {
+    try {
+        const resp = await fetch('/api/engines/list');
+        if (!resp.ok) return;
+        const engines = await resp.json();
+        if (engines.length === 0) return;
+        // Default matchup: Stockfish vs Stockfish (oba boxy default Stockfish).
+        // Pokud Stockfish není dostupný, fallback na první engine v listu.
+        const defaultId = engines.find(e => e.id === 'stockfish')?.id ?? engines[0].id;
+        bindEngineSelect('a', engines, defaultId);
+        bindEngineSelect('b', engines, defaultId);
+    } catch (e) {
+        // Tichý fail — uživatel může pořád ručně vyplnit Path.
+    }
+}
+loadEngines();
+
 // === Helper: sestavit ArenaConfig z formuláře ===============================
 function readConfig() {
     return {
@@ -268,10 +336,22 @@ function renderResults(result) {
     const agg = $('aggregate');
     const scoreA = result.score_a.toFixed(1);
     const scoreB = (result.n_games - result.score_a).toFixed(1);
-    // Perf rating: může být null (100% nebo 0% score → log10 by dělil 0).
-    const perfText = result.perf_rating_diff === null
-        ? 'perf rating: N/A (extrémní výsledek)'
-        : `perf rating diff: ${result.perf_rating_diff >= 0 ? '+' : ''}${result.perf_rating_diff} Elo`;
+    // Perf rating:
+    //   null  → n_games=0 (žádné partie, sotva se stane, ale ošetřeno).
+    //   bound → extrémní výsledek (100% / 0%), backend dal konzervativní mez.
+    //           Pozitivní hodnota → A dominoval, je AT LEAST takhle silný → '≥ +X'.
+    //           Negativní → A propadl, je AT MOST takhle silný → '≤ -X'.
+    //   else  → přesná hodnota.
+    let perfText;
+    if (result.perf_rating_diff === null) {
+        perfText = 'perf rating: N/A';
+    } else {
+        const sign = result.perf_rating_diff >= 0 ? '+' : '';
+        const prefix = result.perf_rating_is_bound
+            ? (result.perf_rating_diff >= 0 ? '≥ ' : '≤ ')
+            : '';
+        perfText = `perf rating diff: ${prefix}${sign}${result.perf_rating_diff} Elo`;
+    }
 
     agg.innerHTML = `
         <div class="score-line">
@@ -302,7 +382,7 @@ function renderResults(result) {
             <td>${g.white_is === 'a' ? 'A' : 'B'}: ${g.white_name}</td>
             <td>${g.white_is === 'a' ? 'B' : 'A'}: ${g.black_name}</td>
             <td class="center result ${resultClass}">${g.result}</td>
-            <td class="center">${g.plies}</td>
+            <td class="center">${Math.ceil(g.plies / 2)}</td>
             <td class="term">${g.termination}</td>
             <td class="center"><a href="#" class="dl" data-idx="${g.game_index}">stáhnout</a></td>
         `;
@@ -330,12 +410,15 @@ runBtn.addEventListener('click', async () => {
     const config = readConfig();
     runBtn.disabled = true;
     statusEl.classList.remove('error');
-    statusEl.textContent = `Spouštím arenu (${config.n_games} partií, ~${(config.n_games * 30 * config.time_per_move).toFixed(0)}s)…`;
+    // Avg plies/partii: empiricky 60-70 (engine vs engine s rozumným časem).
+    // Konstanta 30 byla naivní (chyba 2×).
+    const AVG_PLIES_PER_GAME = 65;
+    statusEl.textContent = `Spouštím arenu (${config.n_games} partií, ~${(config.n_games * AVG_PLIES_PER_GAME * config.time_per_move).toFixed(0)}s)…`;
 
     // Fake progress timer — backend nemá streaming, klient odhaduje podle
-    // n_games × avg moves × time_per_move. Pro 6 × 30 × 0.1 ≈ 18s.
+    // n_games × avg plies × time_per_move. Pro 6 × 65 × 0.1 ≈ 39s.
     const startedAt = performance.now();
-    const estimatedTotal = config.n_games * 30 * config.time_per_move;
+    const estimatedTotal = config.n_games * AVG_PLIES_PER_GAME * config.time_per_move;
     const tick = setInterval(() => {
         const elapsed = (performance.now() - startedAt) / 1000;
         statusEl.textContent = `Hraju… ${elapsed.toFixed(1)}s / ~${estimatedTotal.toFixed(0)}s`;

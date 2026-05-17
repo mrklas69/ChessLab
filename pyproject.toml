@@ -17,6 +17,8 @@ dependencies = [
 
 [project.scripts]
 chesslab = "chesslab:main"
+chesslab-random = "chesslab.engines.random_engine:main"
+chesslab-greedy = "chesslab.engines.greedy_engine:main"
 
 [build-system]
 requires = ["uv_build>=0.11.14,<0.12.0"]

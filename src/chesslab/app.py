@@ -32,6 +32,7 @@ from chesslab.engine import (
     analyse_fen,
     analyse_game_fens,
 )
+from chesslab.engines import EngineInfo, list_available_engines
 from chesslab.pgn import PgnGame, parse_pgn
 from chesslab.play import (
     SKILL_DEFAULT,
@@ -118,6 +119,16 @@ def play_page(request: Request) -> HTMLResponse:
 def health() -> dict[str, str]:
     """Health-check endpoint pro budoucí monitoring / deploy probes."""
     return {"status": "ok", "version": __version__}
+
+
+@app.get("/api/engines/list", response_model=list[EngineInfo])
+def api_engines_list() -> list[EngineInfo]:
+    """Vrátí seznam dostupných enginů (Stockfish + vlastní ChessLab enginy).
+
+    UI (Play, Arena) to používá pro dropdown výběru. Pořadí: Stockfish první
+    (default volba), pak vlastní enginy abecedně.
+    """
+    return list_available_engines()
 
 
 # === PGN API =================================================================
@@ -231,7 +242,7 @@ def api_engine_analyse_game(req: EngineAnalyseGameRequest) -> EngineAnalyseGameR
 
 
 class PlayStartRequest(BaseModel):
-    """Vstupní payload pro /api/play/start — start nové hry proti Stockfish."""
+    """Vstupní payload pro /api/play/start — start nové hry proti UCI enginu."""
 
     color: str = Field(
         ...,
@@ -240,7 +251,7 @@ class PlayStartRequest(BaseModel):
     )
     skill: int = Field(
         SKILL_DEFAULT,
-        description=f"Stockfish Skill Level ({SKILL_MIN}–{SKILL_MAX}).",
+        description=f"UCI engine Skill Level ({SKILL_MIN}–{SKILL_MAX}). Aplikuje se jen pokud engine option 'Skill Level' podporuje (Stockfish ano, vlastní enginy ne).",
         ge=SKILL_MIN,
         le=SKILL_MAX,
     )
@@ -249,6 +260,10 @@ class PlayStartRequest(BaseModel):
         description=f"Budget enginu na tah v sekundách ({THINK_TIME_MIN}–{THINK_TIME_MAX}).",
         ge=THINK_TIME_MIN,
         le=THINK_TIME_MAX,
+    )
+    engine_path: str | None = Field(
+        None,
+        description="Cesta k UCI binárce. None / prázdný string → default Stockfish (env STOCKFISH_PATH).",
     )
 
 
@@ -282,9 +297,14 @@ def api_play_start(req: PlayStartRequest) -> PlayStateResponse:
     """
     color = chess.WHITE if req.color == "w" else chess.BLACK
     try:
-        return start_game(color=color, skill=req.skill, think_time=req.think_time)
+        return start_game(
+            color=color,
+            skill=req.skill,
+            think_time=req.think_time,
+            engine_path=req.engine_path,
+        )
     except FileNotFoundError as exc:
-        # Chybějící Stockfish binárka — server-side config problém.
+        # Chybějící engine binárka — server-side config problém.
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 

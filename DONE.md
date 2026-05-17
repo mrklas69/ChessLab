@@ -2,6 +2,42 @@
 
 Hotové úkoly. Nejnovější nahoře.
 
+## 2026-05-17 — Engine v1 Greedy + Arena dropdown + display name registry
+
+- **Engine v1 Greedy Material** (`src/chesslab/engines/greedy_engine.py`) — 1-ply lookahead nad materiálem. Kaufman piece values v centipawnech (P=100, N=320, B=330, R=500, Q=900, K=0). Random tie-break ze sady tahů s max eval (deterministický engine = nuda + repetition draws). Bonus heuristiky: mate (+100000), stalemate (-100000), check (+30). Bez bonusů Greedy konzistentně **patoval Random** v KvK koncovce (10/10 remíz!), s bonusy **7-0-3 vs Random = +301.3 Elo**. console_script entry `chesslab-greedy`, registrován v `_KNOWN_ENGINES`.
+- **UCI loop refactor** — sdílený `chesslab/engines/_protocol.py` (`run_uci_loop(name, author, choose_move_fn)`). Random a Greedy moduly se zkrátily na ~20 řádků wrapper kolem callbacku. Žádný code duplication mezi enginy.
+- **Aréna UI dropdown** (`templates/arena.html`) — dva `<select>` (Engine A, B) nad path inputem, načítají z `/api/engines/list`. Při změně dropdownu se path input naplní + skill slider se dim (CSS `.skill-disabled` opacity 0.4) když engine `supports_skill = false`. Path input zůstává editovatelný pro custom UCI binárky mimo discovery.
+- **Display name fix** — `chesslab/engines/__init__.py` exportuje `display_name_for_path(path) -> str | None` (registry lookup: 'stockfish*' → 'Stockfish', `_KNOWN_ENGINES` → registrované jméno). `arena._engine_display_name()` ho používá přednostně před path-based heurystikou. Výsledek: ArenaResult i PGN headers ukazují „ChessLab Greedy v1" místo „chesslab (skill 0)". Suffix „(skill N)" se přidává jen pro skill-aware enginy (Stockfish). Vyřazené 2 drobnosti z TODO.
+
+## 2026-05-17 — Engine dropdown na `/play` + auto-discovery
+
+- **Discovery** v `chesslab/engines/__init__.py` (`list_available_engines()`): Stockfish first (jen pokud binárka na disku), pak auto-glob `chesslab-*` v `sysconfig.get_path("scripts")` aktivního venv. `EngineInfo` Pydantic model s flagem `supports_skill` (Stockfish ano, vlastní zatím ne — drží mapa `_KNOWN_ENGINES`).
+- **Endpoint** `GET /api/engines/list` vrátí seznam pro UI dropdowny.
+- **Backend `play.py`** — `GameState` rozšířen o `engine_name` (= UCI handshake `id name`, např. „Stockfish 16.1 by ..." nebo „ChessLab Random v0") a `engine_supports_skill`. `start_game()` přijímá optional `engine_path` (None → default Stockfish), `engine.configure({"Skill Level": ...})` jen pokud option k dispozici (`if "Skill Level" in engine.options`). `_status_text` a `_pgn_full` používají dynamic engine name (PGN header `[White/Black "<name>"]` s případným suffixem „(skill N)" jen pro skill-aware enginy).
+- **Frontend `play.html`** — `<select id="engine">` jako první item v Settings, načítá z `/api/engines/list` při load (default = first option = Stockfish). `onChange` přepíše `state.engineName/enginePath/engineSupportsSkill`; když `!supports_skill` → třída `.skill-disabled` dimne slider (CSS opacity 0.4 + pointer-events none). `startGame()` posílá `engine_path` v payloadu. „Stockfish: <move>" v last-move textu nahrazeno za `state.engineName + ': ' + ...`.
+- **Smoke test**: `/api/engines/list` vrátí 2 enginy s correct flags. Start hry s `chesslab-random.exe` → engine na e4 odpoví h6 (random tah). PGN header `[Black "ChessLab Random v0"]` bez „(skill)" suffixu (správně, Skill Level Random nemá).
+- README aktualizován („Hra proti enginu" + auto-discovery zmínka). Drobnost z TODO drobností o display name v Areně zůstává otevřená (UI Areny dropdown ještě nedostala — separate iterace).
+
+## 2026-05-17 — Vlastní engine v0: Random Mover (UCI standalone)
+
+- **Nový subpackage** `src/chesslab/engines/` (`__init__.py` + `random_engine.py`). Random Mover = náhodný legální tah, žádná evaluace, žádný search. Účel: baseline pro Arenu + dogfooding UCI integrace.
+- **UCI handshake** — minimální spec: `uci` (id name + id author + uciok), `isready` (readyok), `ucinewgame` (reset boardu), `position` (parser pro startpos/fen + optional moves), `go` (ignoruje všechny parametry, vrátí náhodný legální tah okamžitě), `quit`. Ostatní příkazy (stop, ponderhit, setoption, ...) tiše ignorujeme. `print(..., flush=True)` proti stdout bufferingu. `bestmove 0000` defenzivně pro pozici bez legálních tahů.
+- **Console script entry** `chesslab-random = "chesslab.engines.random_engine:main"` v `pyproject.toml`. `uv sync` vygeneruje `.venv\Scripts\chesslab-random.exe` (Windows). Plnohodnotný UCI binary kompatibilní se SimpleEngine.popen_uci → Arena UI ho najde jako každou jinou binárku.
+- **Smoke test** v Areně: Random vs Stockfish skill 0, 4 partie, time 0.05s. Výsledek 0-4 sweep pro Stockfish (4× CHECKMATE), perf rating `-338.0 Elo` s `is_bound: true`. Žádný UCI hang / parser error. Mat v 7 plies v partii #2 (Random rozkýval Scholar's Mate variant).
+- **README** rozšířen o sekci „Vlastní enginy" s cestou k binárce. Identifikováno (drobnost, ne fix): `_engine_display_name` z `chesslab-random` extrahuje jen `chesslab` (split na první `-`) — sub-optimal, viz TODO drobností.
+
+## 2026-05-17 — Arena: default matchup 5 vs 15 → 5 vs 8
+
+- `SKILL_DEFAULT_B` v `arena.py`: 15 → 8. Důvod: 5 vs 15 dával vždy sweep (0:N nebo N:0) a tím jen lower-bound perf rating; 5 vs 8 je dost asymetrické, aby silnější vyhrál většinu partií, ale slabší občas remizoval/vyhrál → perf rating dá přesnou hodnotu už od první spuštění (víc užitečná metrika než demonstrace převahy). Přesunuto z IDEAS.md.
+
+## 2026-05-17 — Engine arena polish (4 nálezy)
+
+- **Tabulka partií „Tahy" počítá full moves**, ne plies (`Math.ceil(plies/2)` ve frontendu). Backend dál posílá `plies` (čistší primitivum), UI je převede na šachistickou konvenci tah = pár W+B. Soubor `templates/arena.html`.
+- **Odhad času ve status řádku 30 → 65 plies/partii.** Konstanta `AVG_PLIES_PER_GAME = 65` (chyba 2× opravena, fake progress je teď v rozumném řádu).
+- **Lower-bound perf rating pro 100% / 0% skóre** místo holého „N/A". Backend `_perf_rating_diff` vrací `(value, is_bound)` tuple — pro extrémní výsledek použije `(score ± 0.5)/n_games` trick (jakoby A udělal/dostal o jednu remízu navíc) → dolní/horní mez. Přidán field `perf_rating_is_bound: bool` do `ArenaResult`. UI prefixuje „≥ +X Elo" nebo „≤ -X Elo". `null` zůstává jen pro `n_games=0` edge.
+- **UCI `ucinewgame` přes respawn enginů per partii.** python-chess `SimpleEngine` `ucinewgame` veřejnou API nevystavuje — nejjednodušší cesta k čisté izolaci je `popen_uci` + `quit` uvnitř smyčky nad partiemi. Overhead ~200ms × N (4s pro N=20, ~7% pro N=2 × krátký time_per_move). Refactor `run_arena()`: `try/finally` per game zaručuje cleanup i při výjimce uprostřed partie. Aktualizovány docstrings modulu a `_play_one_game()`.
+- **Smoke test**: 2× Stockfish skill 20 vs 0, score 2-0 pro A, `perf_rating_diff=190.8` s `perf_rating_is_bound=true`, alternace barev korektní.
+
 ## 2026-05-17 — Engine arena (`/arena`)
 
 - **Backend** `src/chesslab/arena.py` (nový modul) — `EngineConfig` (path + skill), `ArenaConfig` (engine A, B, n_games 1-20, time_per_move 0.05-2.0), `GameResult` per partie (white_name, white_is `'a'`/`'b'`, result, termination, plies, full PGN se Seven Tag Roster), `ArenaResult` (agregát W/L/D, score, score %, perf_rating_diff). `run_arena()` drží persistentní enginy přes celý batch (try/finally pro cleanup), alternuje barvy (sudé partie A=bílý, liché B=bílý), `Skill Level` aplikuje jen pokud engine UCI option má (`engine.options` check — custom engine bez Skill Level přežije). Safety net `MAX_PLIES_PER_GAME = 600` proti zacyklené koncovce. Perf rating: `-400 × log10(1/score_rate - 1)`, vrací `None` pro 0%/100% skóre (logaritmus by dělil 0).
