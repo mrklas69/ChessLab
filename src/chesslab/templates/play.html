@@ -51,6 +51,16 @@
    Použije se přidáním třídy .skill-disabled na #skill-wrap. */
 #skill-wrap.skill-disabled { opacity: 0.4; }
 #skill-wrap.skill-disabled input { pointer-events: none; }
+/* Per-skill rating hint vedle slideru — '(~1500 Elo)' pro Stockfish.
+   Stejný styl jako option labels v dropdownu (~XXXX Elo) → izomorfismus. */
+.settings .rating-hint {
+    color: #5a3a1a;
+    font-family: 'Consolas', 'Courier New', monospace;
+    font-size: 0.88em;
+    margin-left: 4px;
+    min-width: 5em;
+    display: inline-block;
+}
 
 /* === Layout: eval-bar + board (vlevo) | sidebar (vpravo) =================== */
 .layout {
@@ -243,6 +253,9 @@
         <label for="skill">Skill:</label>
         <input type="range" id="skill" min="{{ skill_min }}" max="{{ skill_max }}" value="{{ skill_default }}">
         <span class="value-label" id="skill-val">{{ skill_default }}</span>
+        {# ChessLab Elo hint pro aktuální Stockfish skill — naplní JS z /api/engines/ratings.
+           Skrytý pokud vybraný engine není Stockfish nebo rating pro daný skill chybí. #}
+        <span class="rating-hint" id="skill-rating-hint"></span>
     </span>
     <span>
         <label for="think-time">Think time:</label>
@@ -347,8 +360,16 @@
         engineName: 'Engine',
         // Vybraný engine_path pro odeslání do /api/play/start.
         enginePath: null,
+        // ID vybraného enginu (basename, např. 'stockfish' / 'chesslab-greedy').
+        // Pro Stockfish skill-aware sloužit jako prefix pro per-skill rating lookup
+        // (stockfish:0 ... stockfish:20 v engineRatings mapě).
+        engineId: null,
         // True pokud vybraný engine má Skill Level option (Stockfish ano, Random ne).
         engineSupportsSkill: true,
+        // Mapa engine_id → rating (number) z /api/engines/ratings. Pro Stockfish
+        // obsahuje per-skill záznamy 'stockfish:0' ... 'stockfish:20' podle toho,
+        // s jakými skill levely engine zatím hrál v ChessLab arénách.
+        engineRatings: {},
     };
 
     // === DOM ref ============================================================
@@ -365,6 +386,7 @@
     const $skill = document.getElementById('skill');
     const $skillVal = document.getElementById('skill-val');
     const $skillWrap = document.getElementById('skill-wrap');
+    const $skillRatingHint = document.getElementById('skill-rating-hint');
     const $thinkTime = document.getElementById('think-time');
     const $thinkTimeVal = document.getElementById('think-time-val');
     const $showEval = document.getElementById('show-eval');
@@ -381,19 +403,33 @@
     // Při změně selectu updatujeme state a disable/enable skill slider.
     async function loadEngines() {
         try {
-            const resp = await fetch('/api/engines/list');
-            if (!resp.ok) {
-                $engineSelect.innerHTML = '<option value="">(chyba ' + resp.status + ')</option>';
+            // Paralelně fetch engine list + ratingy (oba endpointy nezávislé).
+            // Promise.all() short-circuit fail — pokud jeden selže, oba.
+            // Ratingy jsou nice-to-have (UI funguje i bez nich), takže každý fetch
+            // chytám zvlášť, fail jen ratingů = prázdná mapa, UI dál funguje.
+            const [enginesResp, ratingsResp] = await Promise.all([
+                fetch('/api/engines/list'),
+                fetch('/api/engines/ratings').catch(() => null),
+            ]);
+            if (!enginesResp.ok) {
+                $engineSelect.innerHTML = '<option value="">(chyba ' + enginesResp.status + ')</option>';
                 return;
             }
-            const engines = await resp.json();
+            const engines = await enginesResp.json();
             if (engines.length === 0) {
                 $engineSelect.innerHTML = '<option value="">(žádný engine nenalezen)</option>';
                 return;
             }
+            // Naplň mapu engine_id → rating. Skill-aware (Stockfish) má per-skill
+            // záznamy 'stockfish:N'; non-skill jeden záznam per binárka.
+            if (ratingsResp && ratingsResp.ok) {
+                const ratings = await ratingsResp.json();
+                state.engineRatings = {};
+                for (const r of ratings) state.engineRatings[r.engine_id] = r.rating;
+            }
             // Stringify engine info do data-* atributů — channel pro change handler.
             // Pro non-skill enginy přidáme ChessLab Elo do labelu (jeden rating per binárka).
-            // Stockfish (skill-aware) má rating per skill → tady ne, zobrazí se jinde.
+            // Stockfish (skill-aware) má rating per skill → tady ne, zobrazí se vedle slideru.
             function engineLabel(e) {
                 if (!e.supports_skill && e.rating != null) {
                     return `${e.name} (~${e.rating.toFixed(0)} Elo)`;
@@ -401,7 +437,7 @@
                 return e.name;
             }
             $engineSelect.innerHTML = engines.map((e, i) =>
-                `<option value="${e.path}" data-supports-skill="${e.supports_skill}" data-name="${e.name}"${i === 0 ? ' selected' : ''}>${engineLabel(e)}</option>`
+                `<option value="${e.path}" data-supports-skill="${e.supports_skill}" data-name="${e.name}" data-engine-id="${e.id}"${i === 0 ? ' selected' : ''}>${engineLabel(e)}</option>`
             ).join('');
             $engineSelect.disabled = false;
             updateEngineSelection();
@@ -415,10 +451,32 @@
         if (!opt || !opt.value) return;
         state.enginePath = opt.value;
         state.engineName = opt.dataset.name || 'Engine';
+        state.engineId = opt.dataset.engineId || null;
         // dataset string → bool. 'true'/'false' přes ===.
         state.engineSupportsSkill = opt.dataset.supportsSkill === 'true';
         // Visual: dimnout skill slider pokud nedělá nic (engine ho ignoruje).
         $skillWrap.classList.toggle('skill-disabled', !state.engineSupportsSkill);
+        // Per-skill rating hint vedle slideru (jen pro skill-aware enginy).
+        updateSkillRatingHint();
+    }
+
+    // Hint '(~XXXX Elo)' vedle skill slideru pro skill-aware enginy (Stockfish).
+    // Lookne `<engineId>:<skill>` v state.engineRatings (např. 'stockfish:5').
+    // Pokud engine není skill-aware, nebo rating pro daný skill chybí (Stockfish
+    // s tím skillem ještě nehrál v aréně), hint je prázdný.
+    function updateSkillRatingHint() {
+        if (!state.engineSupportsSkill || !state.engineId) {
+            $skillRatingHint.textContent = '';
+            return;
+        }
+        const skill = parseInt($skill.value, 10);
+        const ratingKey = `${state.engineId}:${skill}`;
+        const rating = state.engineRatings[ratingKey];
+        if (rating == null) {
+            $skillRatingHint.textContent = '(no rating)';
+        } else {
+            $skillRatingHint.textContent = `(~${rating.toFixed(0)} Elo)`;
+        }
     }
 
     $engineSelect.addEventListener('change', updateEngineSelection);
@@ -455,6 +513,8 @@
         const dt = defaultThinkTime(skill);
         $thinkTime.value = dt;
         $thinkTimeVal.textContent = dt.toFixed(2);
+        // Per-skill rating hint sync s posunem slideru.
+        updateSkillRatingHint();
     });
     // Slider think time: jen label.
     $thinkTime.addEventListener('input', () => {

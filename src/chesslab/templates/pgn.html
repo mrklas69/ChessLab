@@ -246,15 +246,23 @@ button:disabled, button:disabled:hover {
     margin-right: 6px;
     border-radius: 10px;
     font-weight: bold;
+    cursor: pointer;
+    user-select: none;
+    transition: filter 0.1s;
 }
-/* Klasifikační tagy v move list — vedle SAN, malé, barevné. */
+.classification-summary .cls-pill:hover {
+    filter: brightness(0.92);
+}
+/* Klasifikační tagy v move list — vedle SAN, malé, barevné.
+   Klik = skok na tah (data-ply). cursor: pointer = vizuálně klikatelné. */
 .moves .cls-tag {
     font-size: 0.8em;
     margin-left: 0px;
     font-weight: bold;
     vertical-align: super;
-    cursor: help;
+    cursor: pointer;
 }
+.moves .cls-tag:hover { filter: brightness(0.7); }
 .cls-best       { color: #1a6b1a; }  /* zelená — engine match */
 .cls-good       { color: #888;    }  /* šedá — solid */
 .cls-inaccuracy { color: #c8a000; }  /* žlutá — ?! */
@@ -265,6 +273,34 @@ button:disabled, button:disabled:hover {
 .cls-pill.cls-inaccuracy { background: #f5e8b8; color: #6a5500; }
 .cls-pill.cls-mistake    { background: #f4d8b8; color: #6a3a00; }
 .cls-pill.cls-blunder    { background: #f5c8c8; color: #800;    }
+/* === Info bar (materiálová rovnováha + mute toggle) =======================
+   Stejný pattern jako v play.html — izomorfně. Sedí pod boardem v levém sloupci,
+   protože material balance je info o pozici a mute toggle ke zvukům tahů. */
+.info-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+}
+.material-badge {
+    flex: 1;
+    font-family: 'Consolas', 'Courier New', monospace;
+    font-size: 0.95em;
+    color: #1a1a1a;
+    padding: 4px 8px;
+    background: #f4f1e8;
+    border-radius: 3px;
+}
+.mute-btn {
+    background: transparent;
+    border: 1px solid #c0b890;
+    border-radius: 3px;
+    padding: 3px 8px;
+    cursor: pointer;
+    font-size: 1em;
+    line-height: 1;
+}
+.mute-btn:hover { background: #f4f1e8; }
 {% endblock %}
 
 {% block content %}
@@ -300,6 +336,10 @@ button:disabled, button:disabled:hover {
                           marker-end="url(#arrow-head)"/>
                 </svg>
             </div>
+        </div>
+        <div class="info-bar">
+            <span class="material-badge" id="material-badge" title="Materiálová rovnováha v pawn ekvivalentu (P=1, N/B=3, R=5, Q=9)">Materiál: =</span>
+            <button class="mute-btn" id="mute-toggle" type="button">🔊</button>
         </div>
         <div class="nav-hint">Navigace: <code>←</code> <code>→</code> <code>Home</code> <code>End</code> nebo klik na tah.</div>
     </div>
@@ -352,6 +392,8 @@ button:disabled, button:disabled:hover {
 {# jQuery je tvrdá závislost chessboard.js v1 — knihovna ji vyžaduje. #}
 <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
 <script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"></script>
+{# Sdílený audio + materiál helper. Exposuje window.ChessLabAudio + ChessLabMaterial. #}
+{% include "_chesslab_audio.html" %}
 <script>
     // === Inicializace šachovnice ============================================
     const board = Chessboard('board', {
@@ -399,6 +441,11 @@ button:disabled, button:disabled:hover {
     const $classifyBtn = document.getElementById('classify-btn');
     const $classifyStatus = document.getElementById('classify-status');
     const $classifySummary = document.getElementById('classify-summary');
+    const $materialBadge = document.getElementById('material-badge');
+
+    // Mute toggle: ChessLabAudio.bindMuteToggle si najde tlačítko podle id,
+    // nastaví správnou ikonu (🔊/🔇) podle persistovaného stavu a bind klik.
+    ChessLabAudio.bindMuteToggle('mute-toggle');
 
     // === Klasifikace: glyphy + helpery =====================================
     // Glyph per kategorie — lichess konvence (?! ? ??). 'best' = ✓ (zelená),
@@ -476,13 +523,28 @@ button:disabled, button:disabled:hover {
     function setPly(n) {
         if (!state.game) return;
         const max = state.game.moves.length;
-        state.ply = Math.max(0, Math.min(max, n));
+        const oldPly = state.ply;
+        const newPly = Math.max(0, Math.min(max, n));
+        state.ply = newPly;
         updateBoard();
         updateActiveMove();
         // Nová pozice → starý eval už nesedí, smaž ho.
         clearAnalysis();
         // Cursor v grafu sleduje aktuální ply (pokud existuje rendered graf).
         updateGraphCursor();
+        // Audio feedback — jen pokud se ply skutečně změnilo a nejsme na startpos.
+        // Lichess-style: vždy zazní zvuk tahu, který vede k aktuální pozici
+        // (i při skoku přes víc tahů hraje jen ten poslední, žádná série).
+        if (newPly !== oldPly && newPly > 0) {
+            const san = state.game.moves[newPly - 1].san;
+            ChessLabAudio.playForSan(san);
+            // End zvuk při dosažení posledního ply pokud partie skončila
+            // (Result != '*') a SAN sám nekončí matem (jinak duplicit s playForSan).
+            const result = state.game.headers.Result || '*';
+            if (newPly === max && result !== '*' && !san.endsWith('#')) {
+                setTimeout(() => ChessLabAudio.playEnd(), 300);
+            }
+        }
         // Auto-režim: hned spusť analýzu nové pozice (běží na pozadí, šipkám nebrání).
         if (state.autoAnalyse) analyse();
     }
@@ -491,6 +553,14 @@ button:disabled, button:disabled:hover {
         if (!state.game) return;
         const fen = currentFen();
         board.position(fen);
+        // Material badge sledujem každou změnu pozice (= každý setPly + loadPGN).
+        updateMaterialBadge(fen);
+    }
+
+    // Materiálová rovnováha z aktuálního FEN — '+2 ♔' / '−1 ♚' / '='.
+    function updateMaterialBadge(fen) {
+        const balance = ChessLabMaterial.fromFen(fen);
+        $materialBadge.textContent = 'Materiál: ' + ChessLabMaterial.formatBadge(balance);
     }
 
     // Aktuální FEN pozice — využívá se i pro engine analýzu.
@@ -504,7 +574,8 @@ button:disabled, button:disabled:hover {
     // === Render move listu ==================================================
     // Pomocná: render SAN + optional klasifikační tag pro ply N.
     // Tag se přidá jen pokud máme classifications a glyph není prázdný
-    // (good = bez tagu, méně vizuálního šumu).
+    // (good = bez tagu, méně vizuálního šumu). Tag má data-ply pro klik handler
+    // (skok na konkrétní tah — symetricky s klikem na samotný .move span).
     function renderMoveHtml(move) {
         const sanHtml = '<span class="move" data-ply="' + move.ply + '">' + escapeHtml(move.san) + '</span>';
         if (!state.classifications) return sanHtml;
@@ -514,7 +585,7 @@ button:disabled, button:disabled:hover {
         if (!glyph) return sanHtml;
         const label = CLS_LABEL[cls.classification] || cls.classification;
         return sanHtml +
-            '<span class="cls-tag cls-' + cls.classification + '" title="' + escapeHtml(label) + '">' +
+            '<span class="cls-tag cls-' + cls.classification + '" data-ply="' + move.ply + '" title="' + escapeHtml(label) + '">' +
             escapeHtml(glyph) + '</span>';
     }
 
@@ -534,6 +605,13 @@ button:disabled, button:disabled:hover {
         $moves.innerHTML = parts.join(' ');
 
         $moves.querySelectorAll('.move').forEach((el) => {
+            el.addEventListener('click', () => {
+                setPly(parseInt(el.dataset.ply, 10));
+            });
+        });
+        // Klasifikační tagy (?!, ?, ??, ✓) jsou siblings .move spanu (ne childy),
+        // tj. klik na ně neevbubluje na .move — bind explicitně.
+        $moves.querySelectorAll('.cls-tag').forEach((el) => {
             el.addEventListener('click', () => {
                 setPly(parseInt(el.dataset.ply, 10));
             });
@@ -864,7 +942,8 @@ button:disabled, button:disabled:hover {
 
     // Souhrn = pill per kategorie (kolik bylo nejlepších, nepřesností, …).
     // Skip ply=0 (startovní pozice, žádný tah ji nepředchází) a kategorie
-    // s 0 výskyty (nezahlcujeme UI nuly).
+    // s 0 výskyty (nezahlcujeme UI nuly). Každý pill je klikatelný —
+    // klik = skok na další výskyt té kategorie po aktuálním ply (wrap-around).
     function renderClsSummary(evals) {
         const counts = {};
         for (const e of evals) {
@@ -876,12 +955,36 @@ button:disabled, button:disabled:hover {
             const n = counts[cls] || 0;
             if (n === 0) continue;
             const label = CLS_LABEL[cls];
+            const tooltip = `${label} — klik = další výskyt`;
             parts.push(
-                '<span class="cls-pill cls-' + cls + '" title="' + escapeHtml(label) + '">' +
+                '<span class="cls-pill cls-' + cls + '" data-cls="' + cls + '" title="' + escapeHtml(tooltip) + '">' +
                 n + ' ' + escapeHtml(label.toLowerCase()) + '</span>'
             );
         }
         $classifySummary.innerHTML = parts.join('');
+
+        // Bind klik na pilly — smart next occurrence (viz jumpToNextOfClass).
+        $classifySummary.querySelectorAll('.cls-pill').forEach((el) => {
+            el.addEventListener('click', () => jumpToNextOfClass(el.dataset.cls));
+        });
+    }
+
+    // Najdi v state.classifications všechny ply spadající do kategorie `cls`,
+    // skoč na první ply > state.ply. Pokud žádný takový není, wrap na nejnižší.
+    // Smart cycle: opakovaný klik z téhož místa najde "next" jen jednou, druhý
+    // klik už hledá další (setPly mezitím posunul state.ply).
+    function jumpToNextOfClass(cls) {
+        if (!state.classifications) return;
+        const plies = [];
+        for (const e of Object.values(state.classifications)) {
+            if (e.classification === cls) plies.push(e.ply);
+        }
+        if (plies.length === 0) return;
+        plies.sort((a, b) => a - b);
+        // První > current. Pokud current je za posledním (nebo žádný není větší),
+        // wrap na první.
+        const next = plies.find(p => p > state.ply);
+        setPly(next !== undefined ? next : plies[0]);
     }
 
     // Smaže klasifikace ze state — voláme při loadu nové partie.

@@ -61,6 +61,10 @@ class ImportResult(BaseModel):
     skipped_existing: int = 0    # už v DB byly (INSERT OR IGNORE)
     errors: int = 0              # mapping/parsing chyby (per game, neukončí import)
     error_messages: list[str] = []  # první N chybových hlášek (pro debug v UI)
+    # Inkrementální import: timestamp od kterého jsme fetchovali (max v DB + 1).
+    # None = full import (force re-sync, nebo žádná partie usera v DB).
+    since: int | None = None
+    incremental: bool = False    # True = since byl použit (inkrementál), False = full
 
 
 class MoveEval(BaseModel):
@@ -187,6 +191,25 @@ def count_games() -> int:
     return row["c"] if row else 0
 
 
+def latest_lichess_created_at(username: str) -> int | None:
+    """Vrátí `MAX(created_at)` pro Lichess partie tohoto usera, nebo None.
+
+    Pro inkrementální import — volající přidá +1 ms a předá jako `since` do
+    Lichess API, který vrátí jen novější partie (== nestažené).
+
+    Filtruje per `source='lichess'`, protože ID konvence se může mezi zdroji
+    lišit (Lichess 8-char alfanumeric, chess.com numeric, ...) a nechceme
+    aby chess.com timestamp ovlivnil Lichess `since`.
+    """
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT MAX(created_at) AS m FROM games "
+            "WHERE source = 'lichess' AND username = ? AND created_at IS NOT NULL",
+            (username,),
+        ).fetchone()
+    return row["m"] if row and row["m"] is not None else None
+
+
 # === High-level import orchestrace ===========================================
 # Tady se spojí fetch (lichess.py) + insert (insert_games výše) + per-game
 # error handling. `app.py` jen forwarduje výjimky → HTTP statusy a nemusí
@@ -255,19 +278,49 @@ def has_classification(game_id: str) -> bool:
     return row is not None
 
 
-def import_lichess_user(username: str, max_games: int) -> ImportResult:
+def import_lichess_user(
+    username: str,
+    max_games: int,
+    force_full: bool = False,
+) -> ImportResult:
     """Fetch partií z Lichess + insert do DB. Per-game errory neukončí celek.
 
     Network/auth errory (HTTPStatusError, TimeoutException) propaguje volajícímu
     — to jsou hard failures, ne 'jedna partie se nepovedla'.
+
+    Args:
+        username: Lichess username (case-insensitive).
+        max_games: horní limit počtu partií fetchovaných z API.
+        force_full: True → ignoruj `since`, fetchni celou historii (re-sync /
+            repair). Default False → inkrementální (jen partie novější než
+            poslední v DB).
+
+    Inkrementální režim: spočítá `MAX(created_at) + 1 ms` pro Lichess partie
+    tohoto usera v DB a předá to jako `since`. Lichess vrátí jen partie s
+    `createdAt > since`. Pro prvního usera (DB prázdná) se `since` neaplikuje
+    → full fetch. INSERT OR IGNORE zůstává jako safety net pro race conditions.
     """
-    result = ImportResult(requested=max_games)
+    # Inkrementální since — default ON, lze vypnout `force_full=True`.
+    since: int | None = None
+    if not force_full:
+        last_ms = latest_lichess_created_at(username)
+        if last_ms is not None:
+            # +1 ms aby hraniční partie (createdAt == last_ms) nepřišla znova.
+            # Lichess `since` je documented jako "after" → exclusive, ale +1
+            # bezpečné v každém případě.
+            since = last_ms + 1
+
+    result = ImportResult(
+        requested=max_games,
+        since=since,
+        incremental=(since is not None),
+    )
     games_to_insert: list[LichessGame] = []
 
     # Generator yielduje hru za hrou. Pokud jedna selže při mapování (ValueError
     # v _map_to_lichess_game), zalogujeme a pokračujeme — zbytek importu to
     # nesmí zhodit.
-    gen = fetch_user_games(username, max_games)
+    gen = fetch_user_games(username, max_games, since=since)
     while True:
         try:
             g = next(gen)

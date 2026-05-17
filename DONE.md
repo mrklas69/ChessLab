@@ -2,6 +2,79 @@
 
 Hotové úkoly. Nejnovější nahoře.
 
+## 2026-05-17 — UX vlna: audio v `/pgn`, per-skill Stockfish rating, inkrementální Lichess import, klikatelné klasifikační pilly
+
+Čtyři menší navazující iterace v jednom sezení — všechny UX dotahování existujících features (žádné nové subsystémy).
+
+### 1) Audio + materiálová badge + mute toggle v `/pgn`
+
+- **Cíl**: dotáhnout audio partial `_chesslab_audio.html` z `/play` do `/pgn` step-by-step vieweru (SLAP / izomorfismus). Step navigace ← / → → zvuk, materiál badge, mute toggle.
+- **Integrace** v `pgn.html`:
+  - Include partial v `{% block script %}` (před vlastní inline JS).
+  - **Info-bar pod boardem v levém sloupci** (ne v pravém sidebaru jako `/play`) — `<span class="material-badge">` + `<button class="mute-btn">`. Vizuálně blízko šachovnice: material balance = info o pozici, mute = ke zvukům tahů. CSS kopie z `play.html`.
+  - `updateBoard()` rozšířena o `updateMaterialBadge(fen)` → badge sleduje každý setPly + initial load.
+- **Audio logika v `setPly(n)`**:
+  - Zaznamená `oldPly`, spočítá `newPly`. Audio se hraje **jen** pokud `newPly !== oldPly && newPly > 0`.
+  - Lichess-style: skok přes víc tahů (klik na ply uprostřed, End, Home) hraje **jen** zvuk posledního tahu, ne sérii.
+  - **End zvuk**: pokud `newPly === max && headers.Result !== '*' && !san.endsWith('#')` → `setTimeout(playEnd, 300)`. Bez `'*'` kontroly by hrál end u rozehrané partie; bez `'#'` kontroly by duplikoval s mate sound z `playForSan`.
+  - Home (= setPly(0)) → ticho (`newPly > 0` filter).
+- **Smoke test**: `/pgn` HTTP 200, partial included, `ChessLabAudio` + `ChessLabMaterial` + `playForSan` + `info-bar` v HTML. Reálné audio v browseru je manuální test (Chrome AudioContext vyžaduje user gesture).
+
+### 2) Per-skill Stockfish rating vedle slideru v `/play` + `/arena`
+
+- **Problém**: dropdowny zobrazují ChessLab Elo jen pro non-skill enginy (`(~1450 Elo)` v option labelu). Stockfish skill-aware má per-skill rating (`stockfish:0` ... `stockfish:20` v `engine_ratings`), v UI neviditelný.
+- **Řešení**: žádný nový endpoint — frontend si fetchne existující `GET /api/engines/ratings` (paralelně s `/api/engines/list` přes `Promise.all`), postaví mapu `engine_id → rating` a při změně skill slideru ji projde.
+- **Implementace** (oba templates):
+  - HTML: `<span class="rating-hint" id="skill-{a,b}-rating-hint">` vedle existujícího `value-label` skill slideru. CSS: `color: #5a3a1a`, monospace, malé.
+  - JS:
+    - `state.engineRatings = {}` (resp. globální v `arena.html`).
+    - Option dostane `data-engine-id="<id>"` — kanál pro lookup po výběru.
+    - `updateSkillRatingHint()` / `updateRatingHint(suffix)`: pokud vybraný engine ne-skill-aware nebo nevybraný → prázdné. Jinak `<engineId>:<skill>` lookup → buď `(~1500 Elo)` nebo `(no rating)` pro neexistující záznam (Stockfish s tím skillem ještě nehrál).
+    - Volá se z: load engines (initial), `updateEngineSelection` (change dropdown), `skill input` (slider posun).
+- **Smoke test**:
+  - `/api/engines/ratings` aktuálně vrací `stockfish:5=1500, chesslab-minimax=1128, chesslab-greedy=654, chesslab-random=453`.
+  - Pro skill 5 hint `(~1500 Elo)`, pro skill 0-4 a 6-20 `(no rating)` dokud Stockfish na tom skillu nezahraje (vyřeší se přirozeně přes `/arena` runy).
+  - `/play`, `/arena` HTTP 200, hint elementy v HTML, `engineRatings` v JS.
+
+### 3) Inkrementální Lichess import (default ON, `since=max+1ms`)
+
+- **Cíl**: zbytečně nestahovat partie, které už v DB jsou. Lichess API podporuje `since=<ms_epoch>` query parametr (vrátí jen partie s `createdAt > since`).
+- **Backend**:
+  - `lichess.py`: `fetch_user_games(username, max_games, since: int | None = None)` — pokud `since`, přidá do params dictu.
+  - `games.py`:
+    - Nový helper `latest_lichess_created_at(username) -> int | None` (`SELECT MAX(created_at) FROM games WHERE source='lichess' AND username=? AND created_at IS NOT NULL`). Filtruje per `source='lichess'`, protože chess.com má jiné ID konvence (nechceme aby chess.com timestamp ovlivnil Lichess `since`).
+    - `import_lichess_user(username, max_games, force_full=False)`:
+      - Pokud `not force_full`: `since = latest_lichess_created_at(...) + 1` (+1 ms aby hraniční partie nepřišla znovu).
+      - Pokud user v DB prázdný → `since=None` → full fetch.
+      - Předá `since` do `fetch_user_games`.
+    - `ImportResult` rozšířen o `since: int | None` + `incremental: bool` (echo pro frontend).
+  - `app.py`: `LichessImportRequest.force_full: bool = False`, předáno do `import_lichess_user`.
+- **Frontend** `import.html`:
+  - Checkbox "Force full re-sync" pod sliderem (default OFF).
+  - Form posílá `force_full`.
+  - Renderer rozšířen: tři scénáře headline (`+X nových` / `Žádné nové partie (vše už staženo)` / `0 nových (X už v DB)`) + mode badge `inkrementál` (zelený pill) / `full sync` (žlutý pill) + datum `since` v lokálním formátu (`cs-CZ`).
+- **Smoke test** (TirelessWoodpusher, 100 partií v DB):
+  - Před fixem (= staré chování): `fetched:50, inserted:0, skipped_existing:50` (50 partií zbytečně zatáhnuto + 50× SQL no-op).
+  - Po fixu inkrementál (default): `fetched:0, inserted:0, since:1720645025540, incremental:true` (0 partií staženo — Lichess to filtruje serverside).
+  - Force full: `fetched:5, inserted:0, skipped_existing:5, since:null, incremental:false` (správně se vrací k starému chování).
+- **Server restart pozn.**: `uvicorn --reload` nezachytí změnu signature `fetch_user_games` (přidaný `since` keyword arg) — symptom: response neobsahuje nové fields `since`/`incremental` i po editu. Per memory `feedback_uvicorn_reload_limit`: musí se zastavit + restartovat. Killnout obě úrovně procesů (uvicorn master 29552 + multiprocessing worker 42524) přes `Get-NetTCPConnection` lookup + `Stop-Process -Force`, pak `uv run chesslab` přes Bash background.
+
+### 4) Klikatelné klasifikační pilly + tagy v `/pgn`
+
+- **UX**: souhrn `35 nejlepší · 5 dobrý · 9 nepřesnost · 3 chyba · 2 hrubka` byl pasivní info. Teď klik = navigace.
+- **Pilly**: každý dostane `data-cls` + `cursor: pointer` + hover (`filter: brightness(0.92)`).
+- **Smart cycle** `jumpToNextOfClass(cls)`: ze `state.classifications` projde záznamy s `classification === cls`, sortne ply ascending, najde **první `> state.ply`** (= "další výskyt po kurzoru"); pokud žádný → wrap na nejnižší. Opakovaný klik logicky pokračuje — `setPly` mezitím posunul `state.ply`, takže další lookup najde další.
+- **Tagy v move listu** (`?!`, `?`, `??`, ✓): cursor `help` → `pointer` (klikatelné). Klik handler bind explicit (tag je **sibling** `.move` spanu, ne child — klik default nebubla na move). `setPly(ply)` přes `data-ply`.
+- **Smoke test**: `/pgn` HTTP 200, `jumpToNextOfClass` + `data-cls` + `cursor: pointer` na pillech ověřeno v rendered HTML.
+
+### Vědomě vyloučeno z této vlny
+
+- **Audio v `/arena`** — rychlá série tahů by byla otravná (per IDEAS). `/games` stačí handoff do `/pgn` (zdědí audio tam).
+- **Promotion zvuk** (`=Q` zatím jako move) — IDEAS.
+- **Volume slider** vedle mute — hardcoded volumes 0.12-0.20 stačí, do "moc nahlas" feedbacku.
+- **Username filtr v `/games`** — TODO, ale dropdown distinct usernames z DB se hodí až bude > 1 importovaný user.
+- **Per-class indicator v graph dots** — graf už zvýrazňuje blunders (red), ale pilly by mohly mít cross-link do grafu (highlight all blunders při hoveru). Nice-to-have.
+
 ## 2026-05-17 — Audio + materiálová rovnováha + mute toggle (`/play`)
 
 - **Cíl**: zvuková zpětná vazba na tahy (lichess-style click / capture / check / mate) + průběžná indikace materiálové rovnováhy + persistentní mute toggle, vše bez extérních asset (žádné .mp3/.wav v repu).

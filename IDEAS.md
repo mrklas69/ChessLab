@@ -12,7 +12,7 @@ Raw nápady / vize / nice-to-have. Z těchto vznikají úkoly do `TODO.md`, **ne
 - **v2.8: Checks v quiescence** — jen agresivní (= dávající šach) tahy, ne všechny non-captures. Riziko: search explosion (checks generují velkou škálu pokračování). Klasická obrana: SEE-based filtering (jen checks, které nejsou losing). Pravděpodobně až po MVV-LVA, kdy bude pruning efektivnější.
 - **v3: Depth 3** — po implementaci move ordering. Vidíme my-opp-my = můžeme plánovat dvoutahové kombinace (např. fork přípravy). Bez move ordering by v Pythonu při 0.05s/tah neměl čas dohrát.
 - ~~**Engine sparring** — turnaj N enginů, round-robin, ELO výpočet (Bayesian / linear regression).~~ **HOTOVO 2026-05-17**, viz DONE. Round-robin endpoint + Bradley-Terry MM s virtual draw prior + anchor rescale. Recompute z celé matchup matrice po každém turnaji.
-- **Per-skill rating pro Stockfish v dropdownu** — aktuálně dropdown ukazuje rating jen pro non-skill enginy (Random/Greedy/Minimax = jeden rating per binárka). Stockfish skill 0-20 má 21 separátních ratingů; chtělo by samostatný endpoint `GET /api/engines/rating?engine_id=stockfish:N` a JS hook na změnu skill slideru → dotáhnout rating, zobrazit vedle slideru.
+- ~~**Per-skill rating pro Stockfish v dropdownu**~~ — **HOTOVO 2026-05-17**, viz DONE. Frontend (`/play`, `/arena`) fetchne `/api/engines/ratings` paralelně s engine listem, postaví mapu `engine_id → rating`, hint `(~XXXX Elo)` vedle skill slideru pro skill-aware enginy. Bez extra endpointu (existující list všech ratingů stačí).
 - **Opening book** — DB otevírkové teorie (.bin Polyglot, nebo vlastní z partií).
 - **NNUE eval** v Python implementaci (velmi ambiciózní, jen pokud Python výkon nebude blokátor).
 - **Arena: live progress** — místo fake odhadu času streamovat per-game výsledky přes SSE. Pro N > 10 by user získal feedback dřív než po 60s.
@@ -20,6 +20,7 @@ Raw nápady / vize / nice-to-have. Z těchto vznikají úkoly do `TODO.md`, **ne
 ## Analýza
 
 - ~~**Klasifikace tahů** podle Stockfish: brilliant / great / good / inaccuracy / mistake / blunder (per chess.com / lichess).~~ **HOTOVO 2026-05-17**, viz DONE. Lazy on-demand klasifikace s lichess sigmoid + cache v `move_evals`, barevné tagy v /pgn vieweru. (Brilliant/great heuristika vynechána — vyžadovala by sacrifice/only-move detekci.)
+- ~~**Klikatelné klasifikační pilly + tagy v `/pgn`**~~ — **HOTOVO 2026-05-17**, viz DONE. Pilly v souhrnu (`20 nejlepší · 5 chyba`) klikatelné, klik = smart next výskyt po `state.ply` (wrap-around); tagy v move list (`?!`, `??`, `✓`) taky klikatelné = skok na konkrétní tah.
 - **Opening identification** — porovnání s ECO databází.
 - **Endgame tablebases** — Syzygy 6-figure pro perfektní analýzu koncovek.
 - **Pattern recognition** — vidlice, špíz, vazba, mat v X tahů (taktická anotace).
@@ -30,8 +31,8 @@ Raw nápady / vize / nice-to-have. Z těchto vznikají úkoly do `TODO.md`, **ne
 - **Heatmap útoků/obran** — barevné zvýraznění polí.
 - **Coordinate trainer** — trénink hledání polí naslepo.
 - **Vlastní theming** šachovnice (převzít z `Chess/01-05` — 5 hotových stylů).
-- ~~**Audio feedback na tahy + materiálová badge + mute toggle**~~ — **HOTOVO 2026-05-17 na `/play`**, viz DONE. Sdílený partial `_chesslab_audio.html`, Web Audio synthesis (žádné mp3 v repu). Rozšíření do dalších šablon je samostatný úkol (viz dále).
-- **Audio + material badge v `/pgn` step-by-step vieweru** — partial je obecný (`ChessLabAudio.playForSan(san)` + `ChessLabMaterial.fromFen(fen)`), stačí include + bind. Pro `/pgn` by zvuk při ← / → krokování dával smysl, materiál v sidebaru taky. `/arena` přeskočit (rychlá série tahů = otravné).
+- ~~**Audio feedback na tahy + materiálová badge + mute toggle**~~ — **HOTOVO 2026-05-17 na `/play`**, viz DONE.
+- ~~**Audio + material badge v `/pgn` step-by-step vieweru**~~ — **HOTOVO 2026-05-17**, viz DONE. Partial `_chesslab_audio.html` v sidebaru pod boardem, audio jen pro poslední ply (skok přes víc tahů = jediný zvuk), end zvuk při dosažení konce partie pokud SAN sám nekončí matem. `/arena` přeskočeno (rychlá série = otravné).
 - **Promotion zvuk** v `ChessLabAudio` — `=Q`/`=R`/`=B`/`=N` má zatím default move sound. Mohl by mít vlastní vyšší triangle tier, kombinovaný s check/mate pokud zároveň.
 - **Volume slider** vedle mute toggle — momentálně hardcoded volumes 0.12-0.20 v `tone()`. Pokud user řekne "moc nahlas", přidat slider 0-1 s localStorage persistence (stejný pattern jako mute key).
 

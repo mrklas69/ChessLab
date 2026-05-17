@@ -515,6 +515,13 @@ class LichessImportRequest(BaseModel):
         ge=1,
         le=HARD_MAX_GAMES,
     )
+    force_full: bool = Field(
+        False,
+        description=(
+            "True → ignoruj last import timestamp a fetchni celou historii "
+            "(re-sync / repair). Default False = inkrementální (jen nové partie)."
+        ),
+    )
 
 
 @app.post("/api/import/lichess", response_model=ImportResult)
@@ -532,7 +539,7 @@ def api_import_lichess(req: LichessImportRequest) -> ImportResult:
       - 400: validation error (špatné parametry)
     """
     try:
-        return import_lichess_user(req.username, req.max_games)
+        return import_lichess_user(req.username, req.max_games, force_full=req.force_full)
     except ValueError as exc:
         # Validation error (prázdný username, max_games mimo rozsah) — bylo by
         # už chyceno Pydantic, ale safety net.

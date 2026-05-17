@@ -64,11 +64,18 @@ class LichessGame(BaseModel):
 def fetch_user_games(
     username: str,
     max_games: int = DEFAULT_MAX_GAMES,
+    since: int | None = None,
 ) -> Iterator[LichessGame]:
     """Streamuje partie uživatele z Lichess API.
 
     Generator — yielduje hru za hrou, nečeká na celou response. Volající si
     může dělat commit-per-game nebo bufferovat do batch insertu.
+
+    Args:
+        since: Optional unix ms timestamp — Lichess vrátí jen partie s
+            `createdAt > since`. Použito pro inkrementální import: volající
+            předá `max(created_at v DB) + 1` a Lichess přeskočí už uložené.
+            None = bez filtru (full historie od account creation date).
 
     Raises:
         ValueError: prázdný username nebo `max_games` mimo rozsah.
@@ -85,14 +92,17 @@ def fetch_user_games(
     #   pgnInJson=true  → pgn jako pole v JSONu (jinak by endpoint vracel raw PGN stream)
     #   opening=true    → opening detect (eco + name)
     #   clocks/evals=false → zmenšuje response (nepotřebujeme)
+    #   since=<ms>      → inkrementální import (jen partie po tomto timestampu)
     # Defaults necháváme: moves=true, tags=true, sort=dateDesc.
-    params = {
+    params: dict[str, Any] = {
         "max": max_games,
         "pgnInJson": "true",
         "opening": "true",
         "clocks": "false",
         "evals": "false",
     }
+    if since is not None:
+        params["since"] = since
     headers = {"Accept": "application/x-ndjson"}
 
     with httpx.Client(timeout=_TIMEOUT) as client:

@@ -67,6 +67,15 @@
     color: #1a1a1a;
     font-variant-numeric: tabular-nums;
 }
+/* Per-skill ChessLab Elo hint vedle slideru (jen pro skill-aware enginy). */
+.field .rating-hint {
+    flex: 0 0 auto;
+    color: #5a3a1a;
+    font-family: 'Consolas', 'Courier New', monospace;
+    font-size: 0.82em;
+    margin-left: 4px;
+    min-width: 6em;
+}
 .global-controls {
     display: flex;
     gap: 24px;
@@ -181,6 +190,7 @@ table.games a.dl:hover { text-decoration: underline; }
             <label for="skill-a">Skill:</label>
             <input type="range" id="skill-a" min="{{ skill_min }}" max="{{ skill_max }}" step="1" value="{{ skill_default_a }}">
             <span class="value-label" id="skill-a-val">{{ skill_default_a }}</span>
+            <span class="rating-hint" id="skill-a-rating-hint"></span>
         </div>
     </div>
 
@@ -198,6 +208,7 @@ table.games a.dl:hover { text-decoration: underline; }
             <label for="skill-b">Skill:</label>
             <input type="range" id="skill-b" min="{{ skill_min }}" max="{{ skill_max }}" step="1" value="{{ skill_default_b }}">
             <span class="value-label" id="skill-b-val">{{ skill_default_b }}</span>
+            <span class="rating-hint" id="skill-b-rating-hint"></span>
         </div>
     </div>
 </div>
@@ -258,6 +269,33 @@ bindSlider('skill-b', 'skill-b-val', v => v);
 bindSlider('n-games', 'n-games-val', v => v);
 bindSlider('time-per-move', 'time-per-move-val', v => Number(v).toFixed(2) + 's');
 
+// Per-skill rating hint update vedle slideru — voláme při změně skill slideru,
+// dropdownu, i po načtení ratingů. Hint se ukáže jen pro skill-aware enginy
+// (Stockfish), jinak prázdný.
+$('skill-a').addEventListener('input', () => updateRatingHint('a'));
+$('skill-b').addEventListener('input', () => updateRatingHint('b'));
+
+// Mapa engine_id → rating (z /api/engines/ratings). Pro Stockfish per-skill
+// záznamy 'stockfish:0'..'stockfish:20', pro custom enginy jeden záznam.
+let engineRatings = {};
+
+function updateRatingHint(suffix) {
+    const $select = $(`engine-${suffix}`);
+    const $hint = $(`skill-${suffix}-rating-hint`);
+    const opt = $select.options[$select.selectedIndex];
+    if (!opt || opt.dataset.supportsSkill !== 'true') {
+        $hint.textContent = '';
+        return;
+    }
+    const engineId = opt.dataset.engineId;
+    const skill = parseInt($(`skill-${suffix}`).value, 10);
+    const key = `${engineId}:${skill}`;
+    const rating = engineRatings[key];
+    $hint.textContent = (rating == null)
+        ? '(no rating)'
+        : `(~${rating.toFixed(0)} Elo)`;
+}
+
 // === Engine dropdowns =======================================================
 // Pro každý engine box (A, B) je dropdown nad path inputem. Při změně dropdownu
 // naplní se path input cestou + skill slider se dim/enable podle supports_skill.
@@ -282,7 +320,7 @@ function bindEngineSelect(suffix, engines, defaultEngineId) {
         return e.name;
     }
     $select.innerHTML = engines.map(e =>
-        `<option value="${e.path}" data-supports-skill="${e.supports_skill}"${e.id === defaultEngineId ? ' selected' : ''}>${engineOptionLabel(e)}</option>`
+        `<option value="${e.path}" data-supports-skill="${e.supports_skill}" data-engine-id="${e.id}"${e.id === defaultEngineId ? ' selected' : ''}>${engineOptionLabel(e)}</option>`
     ).join('');
     $select.disabled = false;
 
@@ -292,6 +330,7 @@ function bindEngineSelect(suffix, engines, defaultEngineId) {
         $path.value = opt.value;
         const supportsSkill = opt.dataset.supportsSkill === 'true';
         $skillField.classList.toggle('skill-disabled', !supportsSkill);
+        updateRatingHint(suffix);
     };
     $select.addEventListener('change', applySelection);
     applySelection();
@@ -299,10 +338,21 @@ function bindEngineSelect(suffix, engines, defaultEngineId) {
 
 async function loadEngines() {
     try {
-        const resp = await fetch('/api/engines/list');
-        if (!resp.ok) return;
-        const engines = await resp.json();
+        // Paralelně fetchneme i ratingy — Stockfish per-skill rating hint vedle slideru.
+        // Ratings jsou nice-to-have, fail jen ratingů nechá UI pracovat dál (hint zůstane prázdný).
+        const [enginesResp, ratingsResp] = await Promise.all([
+            fetch('/api/engines/list'),
+            fetch('/api/engines/ratings').catch(() => null),
+        ]);
+        if (!enginesResp.ok) return;
+        const engines = await enginesResp.json();
         if (engines.length === 0) return;
+        // Naplň mapu engine_id → rating před bind, ať initial hint sedí už po load.
+        if (ratingsResp && ratingsResp.ok) {
+            const ratings = await ratingsResp.json();
+            engineRatings = {};
+            for (const r of ratings) engineRatings[r.engine_id] = r.rating;
+        }
         // Default matchup: Stockfish vs Stockfish (oba boxy default Stockfish).
         // Pokud Stockfish není dostupný, fallback na první engine v listu.
         const defaultId = engines.find(e => e.id === 'stockfish')?.id ?? engines[0].id;
