@@ -2,6 +2,45 @@
 
 Hotové úkoly. Nejnovější nahoře.
 
+## 2026-05-17 — Round-robin turnaj + Bayesian Elo (Bradley-Terry MLE)
+
+- **Cíl**: lepší konvergence rating systému než per-game FIDE Elo s K=40. Round-robin (každý engine vs každý) + batch refit ratingů přes maximum-likelihood Bradley-Terry s anchor a virtual draw priorou.
+- **Schema** v `db.py` — nová tabulka `engine_matchups (engine_a_id, engine_b_id, wins_a, wins_b, draws, last_updated)` s composite PK + **kanonické pořadí** `a_id < b_id` lexikograficky (žádné duplikace A vs B == B vs A). Akumuluje se napříč všemi arenami i turnaji. INSERT OR REPLACE pattern: SELECT current → spočítej součet → UPSERT.
+- **DB ops v `ratings.py`**: `MatchupRecord` Pydantic, `_canonical_pair(id_a, id_b) -> (canon_a, canon_b, swapped)`, `add_match_results(engine_a_id, engine_b_id, wins_a, wins_b, draws)` (canonicalize + UPSERT s wins swap pokud potřeba), `list_matchups()`.
+- **Bradley-Terry MM (Minorization-Maximization)** v `ratings.py`:
+  - `fit_bradley_terry_ratings(matchups, anchor_id, anchor_rating) -> dict[player_id, rating]`.
+  - Algoritmus: pro každého hráče i, gamma_i_new = W_i / sum_j (n_ij / (gamma_i + gamma_j)), kde W_i = wins + 0.5 * draws (standardní generalizace pro remízy), n_ij = total games mezi i a j. Iteruj dokud max delta gamma < epsilon (1e-6), max 500 iterací.
+  - **Anchor rescale**: po každé iteraci vynásob všechny gamma factorem `anchor_target / anchor_current_gamma` → anchor zůstane na svojí target rating (BT je inherently scale-invariant, fixní bod se drží přes rescale).
+  - **Konverze**: gamma = 10^(rating/400), rating = 400 * log10(gamma). Stejná škála jako klasický Elo.
+- **Virtual draw prior** (klíčové) — bez toho MM **diverguje na sweep matchupech** (gamma vítěze → ∞, poraženého → 0): smoke test odhalil rating "Minimax=377, Random=-980" po 4-engine sweep turnaji. Fix: před iterací enrichni `effective_matchups` o synthetic record s `_BT_PRIOR_DRAWS_PER_PAIR = 1` remízami mezi **každým párem hráčů** (i těmi co spolu reálně nehráli). Garantuje connectivity grafu + finite ratingy. Standardní pattern v BT implementacích (Bayeselo, choix).
+- **`recompute_bayesian_ratings(engine_display_names)`** — re-fit ratingů z aktuální matchup matrice + persist do `engine_ratings`. Volá se z `run_tournament` po skončení (= refit z celé historie, nejen z tohoto turnaje).
+- **Nový modul** `src/chesslab/tournament.py`:
+  - `TournamentConfig` (engines: list[EngineConfig] 2-6, n_games_per_pair 2-20 default 10, time_per_move 0.05-2.0 default 0.05).
+  - `MatchupSummary` per pár v tomto runu (W/L/D), `TournamentResult` s n_pairs/n_games_total/matchups/ratings/games/total_time.
+  - `_run_match_between(a, b, n_games, time)` — n_games partií s alternací barev, respawn enginů per partii (sdíleno s arena.py přes `_play_one_game`, `_maybe_configure_skill`, `_engine_display_name`).
+  - `run_tournament(config)` — for-loop přes všechny páry (i<j), per pár volá `_run_match_between` + `add_match_results`. Na konci `recompute_bayesian_ratings` z celé matrice + vrátí `list_ratings()` sestupně.
+  - Limity: MAX_TOURNAMENT_ENGINES = 6 (15 párů × 10 partií = 150 partií × ~3s = ~7.5 min, request budget). Vyšší by riskovalo timeout.
+- **Endpoint** `POST /api/tournament/run` v `app.py`. Synchronní, blokující. Status mapping: 500 pro FileNotFoundError a obecné engine chyby.
+- **UI rozšíření `/engines`**:
+  - Tlačítko "Spustit round-robin turnaj + Bayesian Elo refit" nahoře (default collapsed form).
+  - Form: checkboxy per engine (Stockfish skill-aware má vlastní number input pro skill level), slider n_games_per_pair + time_per_move, Run button.
+  - **Live estimate** vedle Run: `6 pár(ů) × 10 partií = 60 partií · ~195s (3.2 min)` — recomputuje při každé změně. UX: user vidí cenu před kliknutím.
+  - Status řádek `Hraju turnaj… 32.1s / ~195s` (fake progress).
+  - Po dokončení: nový panel s matchup tabulkou + refresh žebříčku.
+  - `AbortSignal.timeout(600000)` (10 min hard cap pro frontend fetch).
+- **Smoke test E2E**:
+  - Manuální Bayesian test (synthetic data): A>B>C tranzitivně OK; **sweep test 4-engine** (3 ze 6 matchupů 4-0-0): Stockfish 1500 → Minimax 1268 → Greedy 1019 → Random 913 (finite, smysluplné — proti buggy verzi bez priorky 377/-789/-980).
+  - Endpoint 4 enginy × 6 partií per pár = 36 partií, 78s: matchupy SF-vše sweep 6-0-0, Min-Greedy/Random sweep, Greedy-Random 3-0-3.
+  - Po recompute: Stockfish 1500 (anchor, 30 partií) → Minimax 1117 (-383) → Greedy 725 (-775) → Random 576 (-924). Tranzitivně OK, finite, spread realistický (Minimax-Stockfish -383 = ~10% win rate ≈ sweep matchup).
+  - Anchor zůstává na 1500 i po refit ✓.
+- **Pozorování o ChessLab Elo škále**: Stockfish skill 5 = 1500 anchor je relativně silný anchor pro hierarchii custom enginů — všichni custom (Random/Greedy/Minimax v2.7) spadají do 576-1117 rozsahu. Pro absolute Elo bližší lichess kalibraci by chtělo slabší anchor (Stockfish skill 0 nebo Random=800), ale to by posunulo celou stupnici. Aktuální kalibrace zachovává tradiční "Stockfish ~1500" intuition.
+- **Vědomě vyloučeno z této iterace** (zaznamenáno v IDEAS):
+  - **Async background job** + polling endpoint — pro 5-min request je hraniční, ale frontend timeout 10 min stačí.
+  - **Per-skill rating UI dropdown pro Stockfish** — viz předchozí iterace IDEAS.
+  - **Rating chart over time** — historie ratingu engine přes všechny refity.
+  - **Tunable prior** — _BT_PRIOR_DRAWS_PER_PAIR hardcoded na 1; vyšší (2-3) by dal větší regularization pro mini turnaje (2-3 partie per pair), menší (0.5) by uvolnil pro big batches.
+  - **Confidence intervals** (Glicko-style RD) — Bayesian MM vrací jen point estimate, ne uncertainty. Pro UI badge "vysoká/nízká confidence" by chtělo bootstrap nebo Glicko model.
+
 ## 2026-05-17 — ChessLab Elo: persistent engine ratings
 
 - **Cíl**: vidět přibližnou ELO sílu enginů (Random/Greedy/Minimax/Stockfish), ne jen perf_rating_diff per session. Hardcoded anchor + Elo update po každé aréně, persistent v SQLite, samostatná stránka /engines s žebříčkem.

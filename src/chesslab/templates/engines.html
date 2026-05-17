@@ -80,6 +80,148 @@ table.engines td.games-low {
     margin: 18px 0;
     font-size: 0.95em;
 }
+
+/* === Tournament form ====================================================== */
+.tournament-section {
+    margin: 18px 0;
+    padding: 14px 16px;
+    background: #faf6e8;
+    border: 1px solid #d4c8a8;
+    border-radius: 4px;
+}
+.tournament-toggle {
+    cursor: pointer;
+    background: #5a3a1a;
+    color: #fff;
+    border: none;
+    padding: 8px 18px;
+    border-radius: 3px;
+    font-family: inherit;
+    font-size: 0.95em;
+}
+.tournament-toggle:hover { background: #3a2410; }
+.tournament-form {
+    margin-top: 14px;
+    display: none;  /* default collapsed */
+}
+.tournament-form.open { display: block; }
+.tournament-form .engines-pick {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 6px 18px;
+    margin: 10px 0 14px;
+}
+.tournament-form .engines-pick label {
+    font-family: inherit;
+    font-size: 0.92em;
+    color: #333;
+    cursor: pointer;
+    user-select: none;
+}
+.tournament-form .engines-pick label.skill-aware-row {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.tournament-form .engines-pick label.skill-aware-row input[type="number"] {
+    width: 60px;
+    padding: 2px 6px;
+    border: 1px solid #c0b890;
+    border-radius: 3px;
+    font-family: inherit;
+}
+.tournament-form .controls-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 18px;
+    align-items: center;
+    margin: 10px 0;
+}
+.tournament-form .controls-row .field {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.92em;
+}
+.tournament-form .controls-row label { color: #555; }
+.tournament-form .controls-row input[type="range"] { width: 140px; }
+.tournament-form .controls-row .value-label {
+    font-weight: bold;
+    font-variant-numeric: tabular-nums;
+    width: 40px;
+    text-align: right;
+}
+.tournament-form .run-row {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    margin-top: 14px;
+}
+.tournament-form .run-btn {
+    padding: 8px 20px;
+    font-size: 1em;
+    background: #1a4a8a;
+    color: #fff;
+    border: none;
+    border-radius: 3px;
+    cursor: pointer;
+    font-family: inherit;
+}
+.tournament-form .run-btn:hover:not(:disabled) { background: #0d3258; }
+.tournament-form .run-btn:disabled { background: #aaa; cursor: not-allowed; }
+.tournament-form .estimate {
+    color: #666;
+    font-size: 0.88em;
+}
+.tournament-status {
+    margin-top: 10px;
+    font-size: 0.92em;
+    color: #555;
+    font-family: 'Consolas', 'Courier New', monospace;
+}
+.tournament-status.error { color: #b22222; }
+
+/* === Tournament results panel ============================================ */
+.tournament-results {
+    margin: 16px 0;
+    padding: 14px 16px;
+    border: 1px solid #c0b890;
+    background: #f4ecd2;
+    border-radius: 4px;
+    display: none;
+}
+.tournament-results h3 {
+    margin: 0 0 10px;
+    color: #5a3a1a;
+    font-size: 1em;
+}
+.tournament-results .summary {
+    font-size: 0.9em;
+    color: #555;
+    margin-bottom: 10px;
+}
+.tournament-results table.matchups {
+    width: auto;
+    border-collapse: collapse;
+    font-size: 0.88em;
+    margin-top: 8px;
+}
+.tournament-results table.matchups th,
+.tournament-results table.matchups td {
+    padding: 4px 10px;
+    border-bottom: 1px solid #d8cfa8;
+    text-align: left;
+}
+.tournament-results table.matchups th {
+    background: #ece4c8;
+    font-weight: normal;
+    color: #5a3a1a;
+}
+.tournament-results table.matchups td.score {
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+}
 {% endblock %}
 
 {% block content %}
@@ -93,6 +235,63 @@ table.engines td.games-low {
     <strong>Pozor:</strong> není to CCRL nebo lichess Elo. Stockfish full-time
     by na CCRL měl ~3700, ale s 0.05s/tah je výrazně slabší. Pro porovnání
     s veřejnými žebříčky se hodnota nedá použít přímo.
+</div>
+
+<div class="tournament-section">
+    <button class="tournament-toggle" id="tournament-toggle">
+        Spustit round-robin turnaj + Bayesian Elo refit
+    </button>
+    <div class="tournament-form" id="tournament-form">
+        <p style="font-size: 0.88em; color: #555; margin-top: 0;">
+            Round-robin: každý engine proti každému, N partií per pár, alternace barev.
+            Po dokončení se ratingy <strong>všech enginů</strong> přepočítají Bradley-Terry MLE
+            z celé matchup historie (i z předchozích arén/turnajů). Anchor (Stockfish skill 5 = 1500)
+            zůstává fixní.
+        </p>
+        <strong style="font-size: 0.92em;">Enginy (vyber 2–{{ tournament_max_engines }}):</strong>
+        <div class="engines-pick" id="engines-pick">
+            <em>Načítám…</em>
+        </div>
+        <div class="controls-row">
+            <div class="field">
+                <label for="n-games">Partií / pár:</label>
+                <input type="range" id="n-games"
+                       min="{{ n_games_per_pair_min }}" max="{{ n_games_per_pair_max }}"
+                       value="{{ n_games_per_pair_default }}" step="1">
+                <span class="value-label" id="n-games-value">{{ n_games_per_pair_default }}</span>
+            </div>
+            <div class="field">
+                <label for="time-per-move">Čas / tah:</label>
+                <input type="range" id="time-per-move"
+                       min="{{ tournament_time_min }}" max="{{ tournament_time_max }}"
+                       value="{{ tournament_time_default }}" step="0.05">
+                <span class="value-label" id="time-per-move-value">{{ tournament_time_default }}s</span>
+            </div>
+        </div>
+        <div class="run-row">
+            <button class="run-btn" id="run-tournament">Spustit</button>
+            <span class="estimate" id="tournament-estimate"></span>
+        </div>
+        <div class="tournament-status" id="tournament-status"></div>
+    </div>
+</div>
+
+<div class="tournament-results" id="tournament-results">
+    <h3>Výsledky posledního turnaje</h3>
+    <div class="summary" id="tournament-summary"></div>
+    <table class="matchups" id="tournament-matchups">
+        <thead>
+            <tr>
+                <th>Engine A</th>
+                <th>vs.</th>
+                <th>Engine B</th>
+                <th class="score">Skóre A</th>
+                <th class="score">Skóre B</th>
+                <th class="score">Remízy</th>
+            </tr>
+        </thead>
+        <tbody id="matchups-tbody"></tbody>
+    </table>
 </div>
 
 <div class="status" id="status"></div>
@@ -184,6 +383,204 @@ async function loadRatings() {
         statusEl.textContent = `Síťová chyba: ${e.message}`;
         statusEl.classList.add('error');
     }
+}
+
+// === Tournament UI ==========================================================
+// Form je default collapsed (kvůli warningu na čas). Toggle ho otevře/zavře.
+// Engine list načteme z /api/engines/list, render jako checkboxy. Pro Stockfish
+// (skill-aware) přidáme number input pro skill — uživatel zvolí konkrétní skill
+// level, který bude v turnaji hrát.
+
+const TOURNAMENT_MIN = {{ tournament_min_engines }};
+const TOURNAMENT_MAX = {{ tournament_max_engines }};
+
+const $toggle = $('tournament-toggle');
+const $form = $('tournament-form');
+const $enginesPick = $('engines-pick');
+const $nGames = $('n-games');
+const $nGamesValue = $('n-games-value');
+const $time = $('time-per-move');
+const $timeValue = $('time-per-move-value');
+const $runBtn = $('run-tournament');
+const $estimate = $('tournament-estimate');
+const $tournStatus = $('tournament-status');
+const $tournResults = $('tournament-results');
+const $tournSummary = $('tournament-summary');
+const $matchupsTbody = $('matchups-tbody');
+
+let availableEngines = [];
+
+$toggle.addEventListener('click', () => {
+    $form.classList.toggle('open');
+    if ($form.classList.contains('open') && availableEngines.length === 0) {
+        loadEngines();
+    }
+});
+
+async function loadEngines() {
+    try {
+        const resp = await fetch('/api/engines/list');
+        availableEngines = await resp.json();
+        renderEngineCheckboxes();
+        updateEstimate();
+    } catch (e) {
+        $enginesPick.innerHTML = `<em>Chyba načítání: ${e.message}</em>`;
+    }
+}
+
+function renderEngineCheckboxes() {
+    if (availableEngines.length === 0) {
+        $enginesPick.innerHTML = '<em>Žádné enginy nenalezeny.</em>';
+        return;
+    }
+    const html = availableEngines.map((e, i) => {
+        if (e.supports_skill) {
+            // Skill-aware engine → checkbox + skill input (default 5 = anchor).
+            return `
+                <label class="skill-aware-row">
+                    <input type="checkbox" data-idx="${i}" data-skill-aware="true">
+                    <span>${escapeHtml(e.name)}</span>
+                    <span style="color: #888; font-size: 0.88em;">skill:</span>
+                    <input type="number" data-skill-input="${i}" min="0" max="20" value="5">
+                </label>
+            `;
+        }
+        // Non-skill engine → jednoduchý checkbox, případně rating v labelu.
+        const ratingLabel = (e.rating != null)
+            ? ` <span style="color: #888;">(~${e.rating.toFixed(0)} Elo)</span>`
+            : '';
+        return `
+            <label>
+                <input type="checkbox" data-idx="${i}" data-skill-aware="false" checked>
+                ${escapeHtml(e.name)}${ratingLabel}
+            </label>
+        `;
+    }).join('');
+    $enginesPick.innerHTML = html;
+    // Bind change listenery — recompute estimate při změně.
+    $enginesPick.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+        cb.addEventListener('change', updateEstimate);
+    });
+}
+
+function readSelectedEngines() {
+    const selected = [];
+    $enginesPick.querySelectorAll('input[type="checkbox"]:checked').forEach(cb => {
+        const idx = parseInt(cb.dataset.idx, 10);
+        const e = availableEngines[idx];
+        let skill = 0;
+        if (cb.dataset.skillAware === 'true') {
+            const skillInput = $enginesPick.querySelector(`input[data-skill-input="${idx}"]`);
+            skill = parseInt(skillInput?.value || '5', 10);
+        }
+        selected.push({ path: e.path, skill: skill });
+    });
+    return selected;
+}
+
+function updateEstimate() {
+    const n = readSelectedEngines().length;
+    const ng = parseInt($nGames.value, 10);
+    const t = parseFloat($time.value);
+    const pairs = n * (n - 1) / 2;
+    const totalGames = pairs * ng;
+    // Per-game odhad: 65 plies × time_per_move + ~200ms respawn overhead.
+    const perGameSec = 65 * t + 0.2;
+    const totalSec = totalGames * perGameSec;
+    if (n < TOURNAMENT_MIN) {
+        $estimate.textContent = `(vyber alespoň ${TOURNAMENT_MIN} enginy)`;
+        $runBtn.disabled = true;
+        return;
+    }
+    if (n > TOURNAMENT_MAX) {
+        $estimate.textContent = `(max ${TOURNAMENT_MAX} enginů)`;
+        $runBtn.disabled = true;
+        return;
+    }
+    $estimate.textContent = `${pairs} pár(ů) × ${ng} partií = ${totalGames} partií · ~${Math.round(totalSec)}s (${(totalSec/60).toFixed(1)} min)`;
+    $runBtn.disabled = false;
+}
+
+$nGames.addEventListener('input', () => {
+    $nGamesValue.textContent = $nGames.value;
+    updateEstimate();
+});
+$time.addEventListener('input', () => {
+    $timeValue.textContent = parseFloat($time.value).toFixed(2) + 's';
+    updateEstimate();
+});
+
+$runBtn.addEventListener('click', runTournament);
+
+async function runTournament() {
+    const engines = readSelectedEngines();
+    if (engines.length < TOURNAMENT_MIN) return;
+    const config = {
+        engines: engines,
+        n_games_per_pair: parseInt($nGames.value, 10),
+        time_per_move: parseFloat($time.value),
+    };
+    $runBtn.disabled = true;
+    $tournStatus.classList.remove('error');
+    const startedAt = Date.now();
+    const expectedSec = (engines.length * (engines.length - 1) / 2)
+                        * config.n_games_per_pair
+                        * (65 * config.time_per_move + 0.2);
+    const tick = setInterval(() => {
+        const elapsed = (Date.now() - startedAt) / 1000;
+        $tournStatus.textContent = `Hraju turnaj… ${elapsed.toFixed(1)}s / ~${expectedSec.toFixed(0)}s`;
+    }, 250);
+    try {
+        // AbortSignal s vysokým timeoutem — typicky 5-10 min.
+        const resp = await fetch('/api/tournament/run', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(config),
+            signal: AbortSignal.timeout(600000),  // 10 min hard cap
+        });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}));
+            const msg = typeof err.detail === 'string' ? err.detail : `HTTP ${resp.status}`;
+            $tournStatus.classList.add('error');
+            $tournStatus.textContent = `Chyba: ${msg}`;
+            return;
+        }
+        const result = await resp.json();
+        $tournStatus.textContent = `Hotovo: ${result.n_games_total} partií za ${result.total_time}s`;
+        renderTournamentResults(result);
+        await loadRatings();  // refresh žebříčku
+    } catch (e) {
+        $tournStatus.classList.add('error');
+        $tournStatus.textContent = `Chyba: ${e.message}`;
+    } finally {
+        clearInterval(tick);
+        $runBtn.disabled = false;
+    }
+}
+
+function renderTournamentResults(result) {
+    $tournResults.style.display = 'block';
+    $tournSummary.innerHTML = `
+        ${result.n_engines} enginů · ${result.n_pairs} pár(ů) ×
+        ${result.n_games_per_pair} partií = <strong>${result.n_games_total}</strong> partií ·
+        čas: ${result.total_time}s · ${result.time_per_move}s/tah
+    `;
+    // Display name lookup z ratings (mapuje engine_id → display_name).
+    const idToName = {};
+    for (const r of result.ratings) {
+        idToName[r.engine_id] = r.display_name;
+    }
+    const rowsHtml = result.matchups.map(m => `
+        <tr>
+            <td>${escapeHtml(idToName[m.engine_a_id] || m.engine_a_id)}</td>
+            <td style="color: #888;">vs.</td>
+            <td>${escapeHtml(idToName[m.engine_b_id] || m.engine_b_id)}</td>
+            <td class="score">${m.a_wins}</td>
+            <td class="score">${m.b_wins}</td>
+            <td class="score">${m.draws}</td>
+        </tr>
+    `).join('');
+    $matchupsTbody.innerHTML = rowsHtml;
 }
 
 loadRatings();

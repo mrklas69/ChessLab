@@ -26,6 +26,7 @@ skill 5 = 1500 ChessLab Elo** (hardcoded, neaktualizuje se).
 
 from __future__ import annotations
 
+import math
 import time
 from pathlib import Path
 
@@ -307,3 +308,294 @@ def update_ratings_from_arena(
 
     # Re-fetch pro vrácení čerstvého EngineRating se správným last_updated.
     return get_rating(engine_a_id), get_rating(engine_b_id)
+
+
+# === Matchup matrix (per-pair W/L/D historie) ================================
+# Akumuluje se napříč všemi arenami i turnaji. Bayesian Elo recompute (níže)
+# bere tuhle matrix jako vstup → kompletní MLE odhad ratingů ze všech historických
+# partií. Aréna 1v1 přidává obvykle jeden řádek (jediný pár), turnaj N enginů
+# přidává N*(N-1)/2 řádků (všechny páry).
+
+
+class MatchupRecord(BaseModel):
+    """W/L/D agregát mezi dvěma enginy (canonical: engine_a_id < engine_b_id)."""
+
+    engine_a_id: str
+    engine_b_id: str
+    wins_a: int
+    wins_b: int
+    draws: int
+    last_updated: int
+
+
+def _canonical_pair(id_a: str, id_b: str) -> tuple[str, str, bool]:
+    """Kanonicky uspořádá pair tak, aby (a < b) lexikograficky.
+
+    Returns:
+        (canonical_a, canonical_b, swapped) — swapped=True znamená že volající
+        musí prohodit wins_a / wins_b při insertu (protože jeho 'a' je naše 'b').
+    """
+    if id_a < id_b:
+        return (id_a, id_b, False)
+    return (id_b, id_a, True)
+
+
+def add_match_results(
+    engine_a_id: str,
+    engine_b_id: str,
+    wins_a: int,
+    wins_b: int,
+    draws: int,
+) -> None:
+    """Připočte W/L/D do `engine_matchups` (canonical pair, INSERT OR REPLACE).
+
+    SQLite nemá native UPSERT, takže: SELECT current → spočti nový součet →
+    INSERT OR REPLACE. Pro batch turnaj se to volá N×(N-1)/2 krát, drobnost.
+    """
+    canon_a, canon_b, swapped = _canonical_pair(engine_a_id, engine_b_id)
+    if swapped:
+        wins_a, wins_b = wins_b, wins_a
+
+    now_ms = int(time.time() * 1000)
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT wins_a, wins_b, draws FROM engine_matchups "
+            "WHERE engine_a_id = ? AND engine_b_id = ?",
+            (canon_a, canon_b),
+        ).fetchone()
+        if row is not None:
+            wins_a += row["wins_a"]
+            wins_b += row["wins_b"]
+            draws += row["draws"]
+        conn.execute(
+            "INSERT OR REPLACE INTO engine_matchups "
+            "(engine_a_id, engine_b_id, wins_a, wins_b, draws, last_updated) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (canon_a, canon_b, wins_a, wins_b, draws, now_ms),
+        )
+
+
+def list_matchups() -> list[MatchupRecord]:
+    """Všechny matchup records v DB. Pořadí stabilní (PK)."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT engine_a_id, engine_b_id, wins_a, wins_b, draws, last_updated "
+            "FROM engine_matchups"
+        ).fetchall()
+    return [MatchupRecord(**dict(r)) for r in rows]
+
+
+# === Bayesian Elo: Bradley-Terry MM s draws + anchor =========================
+#
+# Bradley-Terry model: P(A vyhraje nad B) = gamma_A / (gamma_A + gamma_B), kde
+# gamma = 10^(rating/400). Pro draws se používá standardní generalizace:
+# každá remíza = 0.5 výhry pro oba. Maximum-likelihood estimate ratingů ze
+# všech pozorovaných partií se najde iterativně přes MM (Minorization-Maximization)
+# algorithm — pro každého hráče i: gamma_i = W_i / sum_j (n_ij / (gamma_i + gamma_j)),
+# kde W_i je effective wins (wins + 0.5*draws) a n_ij celkový počet partií i vs j.
+#
+# **Anchor**: BT model je scale-invariant (rating + konstanta = stejné pravdě-
+# podobnosti), takže pevný rating jednoho hráče se dělá multiplikativním
+# rescale gammy po každé iteraci (gamma *= anchor_target / current_anchor_gamma).
+# Anchor (Stockfish skill 5 = 1500) zůstane na 1500, ostatní se škálují kolem.
+#
+# **Konvergence**: max delta gamma < epsilon = 1e-6 obvykle za < 50 iterací
+# pro typické 4-6 engine turnaje. Hard cap 500 iterací jako safety.
+
+
+# Konvergenční práh — když se max gamma change < epsilon, iterace skončí.
+_BT_EPSILON = 1e-6
+# Hard cap na počet iterací — defenzivní pojistka proti diverging cases (např.
+# hráč co vyhrál vše → gamma → inf). Pro typické turnaje stačí <50 iterací.
+_BT_MAX_ITERATIONS = 500
+# Floor na gamma, aby log10(0) nedělal -inf (hráč co prohrál vše).
+_BT_GAMMA_FLOOR = 1e-10
+# **Bayesian prior — virtuální remíza per pár hráčů** (default 1). Tohle je
+# klíčové: bez priorky MM diverguje na sweep matchupech (gamma vítěze → ∞,
+# poraženého → 0), což dává nesmyslné ratingy typu Minimax=377 po sweep 4-0-0.
+# Virtual draws "softnou" extrém — efektivně počítáme, jako kdyby mezi každým
+# párem hráčů proběhla 1 remíza navíc. To garantuje connectivity grafu hráčů
+# (žádné izolované clusters) a finite ratingy i ze sweepů. Klasický fix v BT
+# implementacích (např. Bayeselo od Rémi Coulom defaultně přidává virtual
+# games). Hodnota 1 je konzervativní; pro extrémně malé batche (1-2 partie
+# per pair) by se hodila 2-3.
+_BT_PRIOR_DRAWS_PER_PAIR = 1
+
+
+def _rating_to_gamma(rating: float) -> float:
+    """Convert ChessLab Elo → gamma (10^(rating/400))."""
+    return 10.0 ** (rating / 400.0)
+
+
+def _gamma_to_rating(gamma: float) -> float:
+    """Convert gamma → ChessLab Elo (400 * log10(gamma))."""
+    return 400.0 * math.log10(max(gamma, _BT_GAMMA_FLOOR))
+
+
+def fit_bradley_terry_ratings(
+    matchups: list[MatchupRecord],
+    anchor_id: str = ANCHOR_ENGINE_ID,
+    anchor_rating: float = ANCHOR_RATING,
+) -> dict[str, float]:
+    """Spočítá Bayesian Elo z matchup matrice (Bradley-Terry MLE s anchor).
+
+    Args:
+        matchups: list MatchupRecord (canonical orientation, ale je to jedno —
+            algoritmus je symetrický).
+        anchor_id: engine ID kotvy (default: Stockfish skill 5).
+        anchor_rating: target rating kotvy (default: 1500).
+
+    Returns:
+        Dict {engine_id: rating} pro všechny hráče v matchupech. Hráč, který
+        v matchupech není, není ve výsledku (volající si rating dohledá z
+        engine_ratings beze změny).
+
+    Raises:
+        ValueError pokud matchups prázdné (nemáme co fitovat).
+    """
+    if not matchups:
+        raise ValueError("Žádné matchupy v DB — nelze fitovat Bayesian Elo.")
+
+    # 1. Sber všechny hráče z matchupů.
+    players: set[str] = set()
+    for m in matchups:
+        players.add(m.engine_a_id)
+        players.add(m.engine_b_id)
+
+    # **Virtual draw prior** — přidáme synthetic matchup s `_BT_PRIOR_DRAWS_PER_PAIR`
+    # remízami mezi každým párem hráčů (i těmi co spolu reálně nehráli). Bez
+    # tohoto MM diverguje na sweepech (gamma → ∞ / 0). Přidaný drobný prior
+    # garantuje connectivity grafu a finite ratingy, prakticky neovlivní výsledek
+    # pro hráče s desítkami partií.
+    players_list = sorted(players)  # deterministický pořadí pro reproducibility
+    effective_matchups: list[MatchupRecord] = list(matchups)
+    if _BT_PRIOR_DRAWS_PER_PAIR > 0:
+        for i in range(len(players_list)):
+            for j in range(i + 1, len(players_list)):
+                effective_matchups.append(
+                    MatchupRecord(
+                        engine_a_id=players_list[i],
+                        engine_b_id=players_list[j],
+                        wins_a=0,
+                        wins_b=0,
+                        draws=_BT_PRIOR_DRAWS_PER_PAIR,
+                        last_updated=0,
+                    )
+                )
+
+    # 2. Effective wins W_i pro každého hráče (wins + 0.5 * draws součtem přes
+    # všechny matchů, kde hrál) — počítáme z effective_matchups (= reálné + virtual).
+    W: dict[str, float] = {p: 0.0 for p in players}
+    for m in effective_matchups:
+        W[m.engine_a_id] += m.wins_a + 0.5 * m.draws
+        W[m.engine_b_id] += m.wins_b + 0.5 * m.draws
+
+    # 3. Inicializace: anchor na svojí gamma, ostatní na 1.0 (= rating 0,
+    # bude se rapidně rescalovat při první anchor normalizaci).
+    anchor_gamma_target = _rating_to_gamma(anchor_rating)
+    gamma: dict[str, float] = {}
+    for p in players:
+        if p == anchor_id:
+            gamma[p] = anchor_gamma_target
+        else:
+            gamma[p] = 1.0
+
+    # 4. MM iterace — update všech gamma současně z předchozí iterace.
+    # Po updatu rescale tak, aby anchor zůstal na svém target.
+    # Pokud anchor v players není (uživatel pustil turnaj bez Stockfish skill 5),
+    # nerescalujeme — rating bude relativní ke gamma=1.0 baseline.
+    anchor_present = anchor_id in players
+
+    for iteration in range(_BT_MAX_ITERATIONS):
+        # Pro efektivitu: spočti denominator součty per hráč v jediném průchodu
+        # přes effective matchupy (= reálné + virtual prior).
+        denom: dict[str, float] = {p: 0.0 for p in players}
+        for m in effective_matchups:
+            n_ij = m.wins_a + m.wins_b + m.draws
+            if n_ij == 0:
+                continue
+            g_sum = gamma[m.engine_a_id] + gamma[m.engine_b_id]
+            if g_sum <= 0:
+                continue
+            # n_ij / (gamma_i + gamma_j) přispívá k denominator obou hráčů (symetricky).
+            term = n_ij / g_sum
+            denom[m.engine_a_id] += term
+            denom[m.engine_b_id] += term
+
+        gamma_new: dict[str, float] = {}
+        for p in players:
+            if denom[p] > 0:
+                gamma_new[p] = max(W[p] / denom[p], _BT_GAMMA_FLOOR)
+            else:
+                # Žádné partie → necháme předchozí gamma (nic nepadlo do denom).
+                gamma_new[p] = gamma[p]
+
+        # Anchor rescale — všechny gamma vynásob factor tak, aby anchor padl na target.
+        if anchor_present and gamma_new[anchor_id] > 0:
+            scale = anchor_gamma_target / gamma_new[anchor_id]
+            for p in gamma_new:
+                gamma_new[p] *= scale
+
+        # Konvergence check.
+        max_change = max(abs(gamma_new[p] - gamma[p]) for p in players)
+        gamma = gamma_new
+        if max_change < _BT_EPSILON:
+            break
+
+    # 5. Convert gamma → rating.
+    return {p: _gamma_to_rating(g) for p, g in gamma.items()}
+
+
+def recompute_bayesian_ratings(
+    engine_display_names: dict[str, str] | None = None,
+) -> dict[str, EngineRating]:
+    """Recompute všech ratingů z aktuálního matchup matrix přes Bayesian Elo
+    a persistuje do `engine_ratings` (REPLACE).
+
+    Args:
+        engine_display_names: optional map engine_id → display_name pro hráče,
+            kteří v engine_ratings ještě nejsou (po prvním turnaji s novým
+            enginem). Volající (run_tournament) tu mapu vyrobí z config.
+            None = pro chybějící hráče se použije engine_id jako display_name
+            (fallback, neměl by se trefovat běžně).
+
+    Returns:
+        Dict {engine_id: EngineRating} pro všechny aktualizované hráče.
+
+    Raises:
+        ValueError pokud matchup matrix prázdná.
+    """
+    matchups = list_matchups()
+    if not matchups:
+        raise ValueError("Matchup matrix je prázdná — nelze recompute.")
+
+    new_ratings = fit_bradley_terry_ratings(matchups)
+
+    # Spočítej total games_played per engine z matchupů (součet přes všechny matchupů,
+    # kde hrál; každý match = wins+losses+draws partií).
+    games_count: dict[str, int] = {p: 0 for p in new_ratings}
+    for m in matchups:
+        n = m.wins_a + m.wins_b + m.draws
+        games_count[m.engine_a_id] = games_count.get(m.engine_a_id, 0) + n
+        games_count[m.engine_b_id] = games_count.get(m.engine_b_id, 0) + n
+
+    # Persist do engine_ratings. Anchor flag zachováme (anchor zůstane anchor,
+    # rating byl rescalován MM algoritmem na target).
+    display_names = engine_display_names or {}
+    for engine_id, new_rating in new_ratings.items():
+        current = get_rating(engine_id)
+        is_anchor = current.is_anchor if current else (engine_id == ANCHOR_ENGINE_ID)
+        display_name = (
+            (current.display_name if current else None)
+            or display_names.get(engine_id)
+            or engine_id
+        )
+        _upsert_rating(
+            engine_id=engine_id,
+            display_name=display_name,
+            rating=new_rating,
+            games_played=games_count[engine_id],
+            is_anchor=is_anchor,
+        )
+
+    return {eid: get_rating(eid) for eid in new_ratings}

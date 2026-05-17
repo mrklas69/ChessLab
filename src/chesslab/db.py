@@ -97,6 +97,22 @@ CREATE TABLE IF NOT EXISTS engine_ratings (
     last_updated     INTEGER NOT NULL,         -- unix ms
     is_anchor        INTEGER NOT NULL DEFAULT 0  -- 1 = fixní rating, neaktualizuje se
 );
+
+-- Akumulační matchup matrix pro Bayesian Elo (Bradley-Terry MM). Drží W/L/D
+-- per pár enginů přes všechny turnaje a arény. Bayesian recompute běží batchem
+-- z celé matice → nejlepší možný odhad ratingů (oproti per-game Elo update,
+-- který s K=40 a malým N osciluje). Composite PK + canonical ordering
+-- (engine_a_id < engine_b_id lexikograficky) brání duplikaci (A vs B == B vs A).
+-- INSERT OR REPLACE pattern v add_match_results: SELECT current + delta, UPSERT.
+CREATE TABLE IF NOT EXISTS engine_matchups (
+    engine_a_id      TEXT NOT NULL,            -- kanonicky < engine_b_id
+    engine_b_id      TEXT NOT NULL,
+    wins_a           INTEGER NOT NULL DEFAULT 0,
+    wins_b           INTEGER NOT NULL DEFAULT 0,
+    draws            INTEGER NOT NULL DEFAULT 0,
+    last_updated     INTEGER NOT NULL,
+    PRIMARY KEY (engine_a_id, engine_b_id)
+);
 """
 
 

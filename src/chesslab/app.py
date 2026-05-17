@@ -40,6 +40,19 @@ from chesslab.engine import (
 from chesslab.engines import EngineInfo, list_available_engines
 from chesslab.classifier import get_or_classify_game
 from chesslab.ratings import EngineRating, init_anchor, list_ratings
+from chesslab.tournament import (
+    MAX_TOURNAMENT_ENGINES,
+    MIN_TOURNAMENT_ENGINES,
+    N_GAMES_PER_PAIR_DEFAULT,
+    N_GAMES_PER_PAIR_MAX,
+    N_GAMES_PER_PAIR_MIN,
+    TIME_DEFAULT as TOURNAMENT_TIME_DEFAULT,
+    TIME_MAX as TOURNAMENT_TIME_MAX,
+    TIME_MIN as TOURNAMENT_TIME_MIN,
+    TournamentConfig,
+    TournamentResult,
+    run_tournament,
+)
 from chesslab.games import (
     GameSummary,
     ImportResult,
@@ -169,8 +182,21 @@ def games_page(request: Request) -> HTMLResponse:
 
 @app.get("/engines", response_class=HTMLResponse)
 def engines_page(request: Request) -> HTMLResponse:
-    """ChessLab Elo žebříček — rating tabulka všech enginů, kteří byli v aréně."""
-    return templates.TemplateResponse(request=request, name="engines.html")
+    """ChessLab Elo žebříček + round-robin turnaj."""
+    return templates.TemplateResponse(
+        request=request,
+        name="engines.html",
+        context={
+            "tournament_min_engines": MIN_TOURNAMENT_ENGINES,
+            "tournament_max_engines": MAX_TOURNAMENT_ENGINES,
+            "n_games_per_pair_min": N_GAMES_PER_PAIR_MIN,
+            "n_games_per_pair_max": N_GAMES_PER_PAIR_MAX,
+            "n_games_per_pair_default": N_GAMES_PER_PAIR_DEFAULT,
+            "tournament_time_min": TOURNAMENT_TIME_MIN,
+            "tournament_time_max": TOURNAMENT_TIME_MAX,
+            "tournament_time_default": TOURNAMENT_TIME_DEFAULT,
+        },
+    )
 
 
 @app.get("/health")
@@ -197,6 +223,26 @@ def api_engines_ratings() -> list[EngineRating]:
     vždy přítomný (seedovaný při startu).
     """
     return list_ratings()
+
+
+@app.post("/api/tournament/run", response_model=TournamentResult)
+def api_tournament_run(config: TournamentConfig) -> TournamentResult:
+    """Round-robin turnaj N enginů + Bayesian Elo refit z celé matchup matrice.
+
+    **Sériový blokující endpoint** — pro 4 enginy × 10 partií = ~3 min, pro 6×10 = ~7 min.
+    Klient musí zvolit timeout >= 600s.
+
+    Status mapping:
+      - 404: žádný engine v configu (Pydantic validace by mělo chytit dřív)
+      - 500: binárka enginu chybí (path FileNotFoundError) nebo engine error.
+    """
+    try:
+        return run_tournament(config)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except Exception as exc:
+        # python-chess engine errors, MM divergence atd. — všechno 500 s detailem.
+        raise HTTPException(status_code=500, detail=f"Turnaj selhal: {exc}") from exc
 
 
 # === PGN API =================================================================
