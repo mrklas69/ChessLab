@@ -1,11 +1,11 @@
-"""ChessLab Engine v2.7: Minimax + alpha-beta + endgame heuristika + quiescence + MVV-LVA.
+"""ChessLab Engine v2.8: Minimax + alpha-beta + endgame heuristika + quiescence (captures + checks) + MVV-LVA.
 
 Negamax framework s alpha-beta pruning. Hloubka 2 plies (vidíme náš tah +
-soupeřovu odpověď), v listech **quiescence search** (pokračujeme jen v
-"neklidných" pozicích = captures, dokud nedojdeme k quiet pozici), tahy
-seřazené přes **MVV-LVA** (silné captures první → α-β cutoffs cuttne dřív).
-Eval = material (Greedy v1 hodnoty) + check bonus + endgame king-tropism +
-edge distance pro silnější stranu v koncovce.
+soupeřovu odpověď), v listech **quiescence search** (pokračujeme v "neklidných"
+pozicích = captures + checks v prvních 2 plies quiescence, dokud nedojdeme k
+quiet pozici), tahy seřazené přes **MVV-LVA** (silné captures první → α-β
+cutoffs cuttne dřív). Eval = material (Greedy v1 hodnoty) + check bonus +
+endgame king-tropism + edge distance pro silnější stranu v koncovce.
 
 **Motivace nad Greedy v1.** Greedy 1-ply lookahead nevidí soupeřovu odpověď.
 Konkrétní zjištění z testu 2026-05-17 (Greedy v1 vs Random, KP-vs-K koncovka):
@@ -48,27 +48,39 @@ Při fixní depth 2 MVV-LVA **nezvedne sílu** (pořadí nemění best move, jen
 rychlost) — přínos uvidíme až ve v3 (depth 3) nebo s iterative deepening.
 Cílem v2.7 je čistá izolace přínosu ordering jako stavebního kamene.
 
+**Motivace v2.8 nad v2.7.** Quiescence v v2.6 zachytila horizon effect v
+**capture** sekvencích, ale slepá je k **forced check** sekvencím. Klasický
+příklad: backrank mate-in-2 přes Qd1+ → Re1 (forced) → Qxe1#. v2.7 vidí Qd1+
+jako quiet tah (= non-capture), proto neaktivuje quiescence search, jde do
+běžného eval listu a ukáže "fake" remízový skór. v2.8 přidá **checking
+non-captures** do quiescence (v prvních 2 plies quiescence, pak už jen captures
+proti search explosion).
+
+Implementačně: v non-check větvi `_quiescence` (po stand-pat) doplníme do moves
+non-capture moves, které `board.gives_check(move)`. Dedup přes set (capture
+s checkem se generuje 2× jinak). Cap `_QUIESCENCE_MAX_CHECK_PLIES = 2` zaručí,
+že po 2 plies quiescence už jen captures (jako v2.7) — bez něj by checks
+v komplikovaných pozicích explodovaly search a UCI movetime přetekl.
+
+**Bez SEE filter** (= "skip losing checks jako Qh5+ na chráněném poli") —
+KISS, alpha-beta vyhodí hloupý check sám: recapture v dalším ply ukáže
+záporný score, jen je search trochu pomalejší. SEE by ušetřil compute, ale
+přidá ~30-50 řádků; kandidát na v2.9.
+
 **Eval funkce sdílí material konstanty s Greedy v1** — Kaufman materiálové
 hodnoty + CHECK_BONUS. Endgame bonus je v2.5 specifický. Mat/pat handling
 přes negamax framework (ne přímý bonus jako Greedy).
 
-**Vědomě vyloučeno z v2.7** (každé +50-200 řádků, kazí čistou izolaci přínosu
-move ordering; viz IDEAS pro další iterace):
+**Vědomě vyloučeno z v2.8** (kandidáti na v2.9+):
 
-  - **Checks v quiescence** — checks generují tak širokou škálu pokračování,
-    že search ne vždycky terminuje rozumně rychle (classic explosion). Captures
-    jsou self-limiting (figur ubývá). Checks v specialized search nodes
-    plánujeme až ve v3+.
+  - **SEE (Static Exchange Evaluation) pruning** — viz výše, KISS.
   - **Killer moves / history heuristic** — non-capture ordering. MVV-LVA
     řeší jen captures; quiet moves jsou v current pořadí python-chess. Killer
     moves (pamatovat 2 tahy, které způsobily β-cutoff ve stejné depth) a
     history heuristic (počítadlo cutoff per from-to) jsou klasická rozšíření.
-  - **SEE (Static Exchange Evaluation) pruning** — quiescence aktuálně
-    prozkoumá i "blbé" captures (Q×P chráněný P = ztráta dámy za pěšce).
-    SEE by je pre-filtroval. Drobnost; výkon stačí.
   - **Iterative deepening + transposition table** — premature optimization
     pro depth 2. ID by automaticky využila zrychlení z MVV-LVA pro jít hloub
-    do time budgetu — kandidát na v2.8/v3.
+    do time budgetu — kandidát na v3.
   - **Mate-distance scoring** — vrátíme ±MATE_SCORE jako pevnou hodnotu,
     search nevybírá nejkratší mat z více options. Pro depth 2 vidíme jen
     mate-in-1, takže OK.
@@ -92,7 +104,7 @@ import chess
 
 from chesslab.engines._protocol import run_uci_loop
 
-ENGINE_NAME = "ChessLab Minimax v2.7"
+ENGINE_NAME = "ChessLab Minimax v2.8"
 ENGINE_AUTHOR = "Jan Mrklas"
 
 # Hloubka v plies (= půltahů). 2 = vidíme svůj tah + soupeřovu odpověď.
@@ -161,6 +173,19 @@ _KING_PROXIMITY_BONUS_PER_SQUARE = 3
 # (Q×P P×Q × ... ne, my máme jen 1 výměnu na queen → 2 plies). Stockfish
 # defaultně používá ~6, dáváme 8 jako pojistku.
 _QUIESCENCE_MAX_PLIES = 8
+
+# === QUIESCENCE CHECKS (v2.8) ===
+#
+# Max ply v quiescence, kde generujeme i non-capture checking moves (mimo
+# captures). Pak už čistě captures — checks v hlubších plies generují search
+# explosion (každý check má v průměru 5-10 legálních responsí, kde každý
+# může být další check → exponenciální branching).
+#
+# Hodnota 2 = my dáme check (ply 0) + soupeř odpoví (ply 1), pak už jen
+# captures. Stačí pro 2-tahové taktické sekvence (Qxh7+ Kxh7 = capture
+# check, vidí ho 1-ply quiescence; Rxe8+ Kxe8 dtto). Forced mate sekvence
+# přes 2+ checks ne, ale ty pokrývá main search depth 2.
+_QUIESCENCE_MAX_CHECK_PLIES = 2
 
 # === MOVE ORDERING (v2.7) ===
 #
@@ -392,6 +417,14 @@ def _quiescence(board: chess.Board, alpha: int, beta: int, ply: int = 0) -> int:
     půjdou first, escape captures jako "vezmu šachujícího" se velmi často
     ukážou jako best response, brzký cutoff šetří search v escape sekvenci).
 
+    **Non-capture checks** (v2.8): v non-check větvi, pokud `ply <
+    _QUIESCENCE_MAX_CHECK_PLIES`, doplníme do moves i non-capture tahy, které
+    dávají soupeři šach (`board.gives_check`). Dedup přes set (capture + check
+    by se generoval 2×). Sortí přes MVV-LVA: captures dostanou positive score
+    → půjdou první, checking non-captures = score 0 → půjdou za nimi. Bez SEE
+    filtru = "hloupé" checks (Qh5+ na chráněném poli) projdou, α-β je v dalším
+    ply odřízne.
+
     Návratová hodnota: best score pro side-to-move (negamax konvence).
     """
     # Terminál checks — stejně jako v _evaluate / _negamax. Mate/draw mají
@@ -424,9 +457,22 @@ def _quiescence(board: chess.Board, alpha: int, beta: int, ply: int = 0) -> int:
             return beta
         if stand_pat > alpha:
             alpha = stand_pat
-        # MVV-LVA ordering captures (v2.7): silné captures první → α-β
-        # ořízne slabé captures dřív (PxQ před QxP).
-        moves = _order_moves(board, board.generate_legal_captures())
+
+        # v2.8: captures + (v prvních N plies) non-capture checks.
+        # Set kvůli dedup — capture, který zároveň dává šach (typicky Qxf7+),
+        # by se jinak generoval dvakrát. chess.Move je hashable (immutable
+        # tuple-like), takže `in set` funguje bez custom __hash__.
+        candidates: set[chess.Move] = set(board.generate_legal_captures())
+        if ply < _QUIESCENCE_MAX_CHECK_PLIES:
+            # board.gives_check(m) je efektivní — python-chess to spočte bez
+            # full push (pseudo-push interně, ~O(1) per move). Pro typický
+            # middlegame s ~30 legals je to ~30 × O(1) = zanedbatelné.
+            for m in board.legal_moves:
+                if m not in candidates and board.gives_check(m):
+                    candidates.add(m)
+        # MVV-LVA ordering: captures (score > 0) první, checking non-captures
+        # (score 0) za nimi, stable sort zachová pořadí python-chess uvnitř.
+        moves = _order_moves(board, candidates)
     else:
         # In check — žádný stand-pat (eval pozice neplatí jako lower bound,
         # musíme reagovat). Všechny legal moves, aby quiescence chytila i

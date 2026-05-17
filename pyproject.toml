@@ -3,6 +3,8 @@ name = "chesslab"
 version = "0.1.0"
 description = "Osobní šachová laboratoř — lokální Python app s web UI (analýza, engine arena, Lichess import)"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
     { name = "Jan Mrklas", email = "mrklas69@gmail.com" }
 ]
@@ -20,6 +22,7 @@ chesslab = "chesslab:main"
 chesslab-random = "chesslab.engines.random_engine:main"
 chesslab-greedy = "chesslab.engines.greedy_engine:main"
 chesslab-minimax = "chesslab.engines.minimax_engine:main"
+chesslab-minimax-v27 = "chesslab.engines.minimax_engine_v27:main"
 
 [build-system]
 requires = ["uv_build>=0.11.14,<0.12.0"]

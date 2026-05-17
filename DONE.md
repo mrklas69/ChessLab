@@ -2,6 +2,52 @@
 
 Hotové úkoly. Nejnovější nahoře.
 
+## 2026-05-17 — Minimax v2.8: non-capture checks v quiescence (4. sezení dne)
+
+v2.7 quiescence chytala horizon effect v **capture** sekvencích (PxQ QxP), ale slepá byla k **forced check** sekvencím (Qd1+ Re1 Qxe1#). v2.8 přidá non-capture checking moves do quiescence (v prvních 2 plies, pak už jen captures kvůli search explosion).
+
+### Verzování (snapshot pattern)
+
+Pro sparring oba enginy zároveň. Snapshot v2.7 zamražený jako `minimax_engine_v27.py` s vlastním engine_id `chesslab-minimax-v27`. `chesslab-minimax` je vždy "current ChessLab minimax", postupně přepisovaný novou verzí (ratings DB drží jeho historický akumulační rating napříč verzemi).
+
+- Kopie `minimax_engine.py` → `minimax_engine_v27.py` (logika 1:1, vlastní `ENGINE_NAME = "ChessLab Minimax v2.7 (snapshot)"`).
+- Nový entry point `chesslab-minimax-v27` v `pyproject.toml` + `_KNOWN_ENGINES` registry.
+- `uv sync` → `.venv/Scripts/chesslab-minimax-v27.exe`.
+
+### Implementace v2.8
+
+- **Nová konstanta** `_QUIESCENCE_MAX_CHECK_PLIES = 2` — po této hloubce quiescence už jen captures (search explosion bez SEE filtru).
+- **Úprava `_quiescence`** v non-check větvi:
+  ```python
+  candidates: set[chess.Move] = set(board.generate_legal_captures())
+  if ply < _QUIESCENCE_MAX_CHECK_PLIES:
+      for m in board.legal_moves:
+          if m not in candidates and board.gives_check(m):
+              candidates.add(m)
+  moves = _order_moves(board, candidates)
+  ```
+  - **Set kvůli dedup**: capture, který dává šach (typicky `Qxf7+`), by se jinak generoval 2× (z `generate_legal_captures` i z `legal_moves` filtru přes `gives_check`). `chess.Move` je hashable.
+  - **`board.gives_check(m)` efektivní** — python-chess interní pseudo-push, O(1) per move.
+  - **MVV-LVA ordering**: captures dostanou score > 0 (jako v2.7), checking non-captures = score 0 → půjdou za captures (stable sort).
+- **Bez SEE filtru** (= "skip losing checks jako Qh5+ na chráněném poli") — KISS. Alpha-beta hloupý check vyhodí v dalším ply (recapture ukáže záporný score), jen je search trochu pomalejší. SEE kandidát na v2.9 (~30-50 řádků).
+- Display name update: `_KNOWN_ENGINES["chesslab-minimax"] = ("ChessLab Minimax v2.8", False)`.
+
+### Smoke test
+- `choose_move()` na initial position vrací legální tah (`a2a4`).
+- Terminal pozice (Scholar's mate FEN) detekována jako `is_checkmate=True`.
+
+### Sparring (20 partií, time_per_move=0.05s, alternují barvy)
+- **v2.8: 15 výher**, v2.7: 4 výhry, 1 remíza.
+- Score 77.5 % → best estimate **+215 Elo** nad v2.7.
+- 95 % CI cca [+65, +630] Elo — 20 partií je spodní hranice spolehlivosti, ale signál jasně pozitivní.
+
+### Pozn.
+- Sparring přes `POST /api/arena/run` (synchronní, ~2 min pro 20 partií × 0.05s).
+- Path k binárkám: `.venv/Scripts/chesslab-minimax{,-v27}.exe`.
+- Při budoucích verzích (v2.9, v3, …) analogický snapshot pattern: `minimax_engine_v28.py` + `chesslab-minimax-v28` entry point.
+
+---
+
 ## 2026-05-17 — /games per-account filter (3. sezení dne)
 
 Když user importuje partie z víc účtů (typicky Lichess + chess.com), `/games` tabulka je dosud spojuje. Tento commit přidá dropdown "Účet" v filter baru, který filtruje per `(source, username)` kombinaci.
