@@ -186,6 +186,32 @@
     cursor: not-allowed;
     pointer-events: none;
 }
+/* === Info bar (materiálová rovnováha + mute toggle) ======================= */
+.info-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.material-badge {
+    flex: 1;
+    font-family: 'Consolas', 'Courier New', monospace;
+    font-size: 0.95em;
+    color: #1a1a1a;
+    padding: 4px 8px;
+    background: #f4f1e8;
+    border-radius: 3px;
+}
+.mute-btn {
+    background: transparent;
+    border: 1px solid #c0b890;
+    border-radius: 3px;
+    padding: 3px 8px;
+    cursor: pointer;
+    font-size: 1em;
+    line-height: 1;
+}
+.mute-btn:hover { background: #f4f1e8; }
+
 .error {
     color: #a00;
     background: #fee;
@@ -266,6 +292,10 @@
     <div class="sidebar">
         <div class="status" id="status">Zvol nastavení a klikni „Nová hra".</div>
         <div class="last-move" id="last-move"></div>
+        <div class="info-bar">
+            <span class="material-badge" id="material-badge" title="Materiálová rovnováha v pawn ekvivalentu (P=1, N/B=3, R=5, Q=9)">Materiál: =</span>
+            <button class="mute-btn" id="mute-toggle" type="button">🔊</button>
+        </div>
         <div class="moves" id="moves">
             <span class="empty">(žádné tahy)</span>
         </div>
@@ -288,6 +318,8 @@
 {% block script %}
 <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
 <script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"></script>
+{# Sdílený audio + materiál helper. Exposuje window.ChessLabAudio + ChessLabMaterial. #}
+{% include "_chesslab_audio.html" %}
 <script>
     // === Konstanty (zrcadlí backend) ========================================
     // Default think time podle skill — vzorec stejný jako v play.py:default_think_time.
@@ -341,6 +373,7 @@
     const $evalBarWhite = document.getElementById('eval-bar-white');
     const $evalBarText = document.getElementById('eval-bar-text');
     const $arrow = document.getElementById('best-move-arrow');
+    const $materialBadge = document.getElementById('material-badge');
 
     // === Engine list (fetch při load + onChange) ============================
     // Načteme dostupné enginy z backendu a naplníme dropdown. Po fetchi nastavíme
@@ -390,6 +423,10 @@
 
     $engineSelect.addEventListener('change', updateEngineSelection);
     loadEngines();
+
+    // Mute toggle: ChessLabAudio.bindMuteToggle si najde tlačítko podle id,
+    // nastaví správnou ikonu (🔊/🔇) podle persistovaného stavu a bind klik.
+    ChessLabAudio.bindMuteToggle('mute-toggle');
 
     // === Inicializace chessboard.js =========================================
     // draggable=true, onDrop handler validuje tah přes backend.
@@ -600,13 +637,39 @@
         // Když rovnou skočíme na finální FEN (po engine reakci), chessboard.js
         // animuje skrytý pohyb společně s engine tahem → vizuálně rozhozené.
         // Řešení: nejdřív animuj na mezistav po hráčově tahu, pak na finál.
+        //
+        // Audio: zvuk hráčova tahu zazní s mezistavem (hned), zvuk engine tahu
+        // s finálem (timeout) — tak vždy zvuk synchronní s tím, co vidím.
         if (data.fen_after_player_move && data.fen_after_player_move !== data.fen) {
             board.position(data.fen_after_player_move);
+            if (data.last_player_move) ChessLabAudio.playForSan(data.last_player_move.san);
             // Default chessboard.js moveSpeed = 200ms. 250ms = mírná rezerva.
-            setTimeout(() => board.position(data.fen), 250);
+            setTimeout(() => {
+                board.position(data.fen);
+                if (data.last_engine_move) ChessLabAudio.playForSan(data.last_engine_move.san);
+            }, 250);
         } else {
             board.position(data.fen);
+            // Jediný tah v response: může být hráčův (mat / pat — engine už nehraje)
+            // nebo enginu (start hry s černým — engine táhne první).
+            const onlyMove = data.last_engine_move || data.last_player_move;
+            if (onlyMove) ChessLabAudio.playForSan(onlyMove.san);
         }
+        // Mat / draw / resign bez SAN s '#': přidej explicitní end zvuk
+        // (resign nepřišel jako tah, jen game_over flag). playForSan('#') už
+        // hraje end, takže duplicate radši ne — kontroluj jestli poslední tah
+        // sám neskončil '#'.
+        if (data.game_over) {
+            const lastSan = (data.last_engine_move || data.last_player_move || {}).san || '';
+            if (!lastSan.endsWith('#')) {
+                // Engine tah už se ozve s 250ms timeoutem; zaškrtáme po něm.
+                setTimeout(() => ChessLabAudio.playEnd(), 300);
+            }
+        }
+
+        // Materiálová rovnováha — vždy podle finálního FEN.
+        const balance = ChessLabMaterial.fromFen(data.fen);
+        $materialBadge.textContent = 'Materiál: ' + ChessLabMaterial.formatBadge(balance);
 
         // Status text + classy podle stavu.
         $status.textContent = data.status;

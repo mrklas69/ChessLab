@@ -1,0 +1,161 @@
+{# Sdílený partial: Web Audio synthesis pro zvuky tahů + helper pro materiálovou
+   rovnováhu + mute toggle s localStorage persistence.
+
+   Include přes `{% include "_chesslab_audio.html" %}` v {% block script %}.
+   Nezávislé na chessboard.js — používá jen FEN string + SAN string.
+
+   Exposed API:
+     - window.ChessLabAudio.playForSan(san) — přehraj zvuk pro daný SAN tah
+       ('e4' → move, 'Bxe5' → capture, 'Qd5+' → check, 'Qe8#' → end/mate)
+     - window.ChessLabAudio.playEnd() — explicitní end zvuk (mat / resign / draw)
+     - window.ChessLabAudio.setMuted(bool) / .isMuted() / .toggleMuted()
+     - window.ChessLabMaterial.fromFen(fen) → {white, black, diff} v pawn
+       ekvivalentu (P=1, N=3, B=3, R=5, Q=9; král neсhytá)
+     - window.ChessLabMaterial.formatBadge(balance) → '+2 (♔)' | '−1 (♚)' | '='
+   Volající si sám zavolá `playForSan` / `fromFen` v správnou chvíli. #}
+<script>
+(function() {
+    // === Web Audio synthesis ============================================
+    // AudioContext se nesmí vytvořit dřív, než user provede interakci
+    // (autoplay policy v Chrome). Lazy init při prvním přehrávání.
+    let _audioCtx = null;
+    function getCtx() {
+        if (_audioCtx === null) {
+            try {
+                _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            } catch (e) {
+                _audioCtx = false;  // browser nepodporuje
+            }
+        }
+        return _audioCtx || null;
+    }
+
+    // Mute state v localStorage ('chesslab-sounds-muted' = '1' / '0').
+    // Default: ON (= unmuted).
+    const MUTE_KEY = 'chesslab-sounds-muted';
+    function isMuted() {
+        return localStorage.getItem(MUTE_KEY) === '1';
+    }
+    function setMuted(muted) {
+        localStorage.setItem(MUTE_KEY, muted ? '1' : '0');
+        window.dispatchEvent(new CustomEvent('chesslab-mute-changed', { detail: muted }));
+    }
+    function toggleMuted() {
+        setMuted(!isMuted());
+    }
+
+    // Krátký click přes oscillator → gain envelope (exponenciální fade-out).
+    // freq v Hz, duration v s. Volume 0-1.
+    function tone(freq, duration, type = 'sine', volume = 0.2) {
+        if (isMuted()) return;
+        const ctx = getCtx();
+        if (!ctx) return;
+        const now = ctx.currentTime;
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = type;
+        osc.frequency.value = freq;
+        // Krátký attack (5 ms) + exponenciální decay — zní jako klik / krátký tón,
+        // ne jako dlouhé hučení.
+        gain.gain.setValueAtTime(0.0001, now);
+        gain.gain.exponentialRampToValueAtTime(volume, now + 0.005);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+        osc.connect(gain).connect(ctx.destination);
+        osc.start(now);
+        osc.stop(now + duration + 0.05);
+    }
+
+    // === Zvuky per typ tahu =============================================
+    // Move: subtle click (200 Hz, 60 ms).
+    function playMove() {
+        tone(200, 0.06, 'sine', 0.18);
+    }
+    // Capture: hlasitější dvojklik (240 + 180 Hz), zvuk "úderu".
+    function playCapture() {
+        tone(240, 0.07, 'square', 0.15);
+        setTimeout(() => tone(180, 0.07, 'sine', 0.12), 40);
+    }
+    // Check: vyšší alert tón (660 Hz, 150 ms).
+    function playCheck() {
+        tone(660, 0.15, 'triangle', 0.18);
+    }
+    // End (mat / draw / resign): descending sekvence A4 → A3 (440 → 220 Hz).
+    function playEnd() {
+        tone(440, 0.18, 'sine', 0.2);
+        setTimeout(() => tone(330, 0.18, 'sine', 0.18), 120);
+        setTimeout(() => tone(220, 0.3, 'sine', 0.16), 260);
+    }
+
+    // === SAN classifier =================================================
+    // SAN konvence:
+    //   x = capture (Nxe4, exd5, …)
+    //   + = check (Qd5+)
+    //   # = mate (Qe8#)
+    //   O-O / O-O-O = castle
+    // Promotion má = (např. e8=Q) — vrátíme jako 'move' (nepřehrávej speciální zvuk).
+    // Priorita: mate > check > capture > move.
+    function playForSan(san) {
+        if (!san) return;
+        if (san.endsWith('#')) { playEnd(); return; }
+        if (san.endsWith('+')) { playCheck(); return; }
+        if (san.includes('x')) { playCapture(); return; }
+        playMove();
+    }
+
+    window.ChessLabAudio = {
+        playMove, playCapture, playCheck, playEnd,
+        playForSan,
+        isMuted, setMuted, toggleMuted,
+    };
+
+    // === Materiálová rovnováha ==========================================
+    // Pawn ekvivalent (lidštější než cp): P=1, N=3, B=3, R=5, Q=9, K=0.
+    // FEN piece placement: první pole oddělené mezerou, sekvence řad od 8 dolů.
+    // Velká písmena = bílý, malá = černý. Číslo = počet prázdných polí.
+    const PIECE_VALUES = { 'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0 };
+
+    function fromFen(fen) {
+        if (!fen) return { white: 0, black: 0, diff: 0 };
+        const placement = fen.split(' ')[0];
+        let white = 0, black = 0;
+        for (const ch of placement) {
+            const upper = ch.toUpperCase();
+            const value = PIECE_VALUES[upper];
+            if (value === undefined) continue;  // číslo, '/', neznámý znak
+            if (ch === upper) white += value;
+            else black += value;
+        }
+        return { white, black, diff: white - black };
+    }
+
+    // '+2 (♔)' pokud bílý vede, '−1 (♚)' pokud černý, '=' pokud vyrovnáno.
+    // Mínus s typografickou pomlčkou (−) místo ASCII (-) — lépe vizuálně.
+    function formatBadge(balance) {
+        const d = balance.diff;
+        if (d === 0) return '=';
+        const abs = Math.abs(d);
+        const glyph = d > 0 ? '♔' : '♚';
+        const sign = d > 0 ? '+' : '−';
+        return `${sign}${abs} ${glyph}`;
+    }
+
+    window.ChessLabMaterial = { fromFen, formatBadge };
+
+    // === Mute icon helper ===============================================
+    // Stránka přidá <button id="mute-toggle">🔊</button> kdekoli; helper
+    // si ho najde, aktualizuje glyph dle stavu, a bind klik na toggleMuted.
+    // CustomEvent 'chesslab-mute-changed' propaguje stav across instances.
+    function bindMuteToggle(buttonId) {
+        const btn = document.getElementById(buttonId);
+        if (!btn) return;
+        function render() {
+            btn.textContent = isMuted() ? '🔇' : '🔊';
+            btn.title = isMuted() ? 'Zvuky vypnuty (klik = zapnout)' : 'Zvuky zapnuty (klik = vypnout)';
+        }
+        btn.addEventListener('click', toggleMuted);
+        window.addEventListener('chesslab-mute-changed', render);
+        render();
+    }
+    window.ChessLabAudio.bindMuteToggle = bindMuteToggle;
+})();
+</script>

@@ -2,6 +2,34 @@
 
 Hotové úkoly. Nejnovější nahoře.
 
+## 2026-05-17 — Audio + materiálová rovnováha + mute toggle (`/play`)
+
+- **Cíl**: zvuková zpětná vazba na tahy (lichess-style click / capture / check / mate) + průběžná indikace materiálové rovnováhy + persistentní mute toggle, vše bez extérních asset (žádné .mp3/.wav v repu).
+- **Nový partial** `src/chesslab/templates/_chesslab_audio.html` — Jinja include s jediným inline `<script>` blokem, žádné závislosti (ani na chessboard.js / jquery). Exposed API pod `window.ChessLabAudio` (audio + mute) a `window.ChessLabMaterial` (FEN → balance). Záměrně globals — partial se hodí kamkoli, kde je potřeba audio, jen include + bind. DRY: až ho zapojím i do `/pgn` / `/arena`, sdílí se stejný JS.
+- **Web Audio synthesis** (žádné mp3) — Lazy `AudioContext` při prvním přehrávání (Chrome autoplay policy: AudioContext nesmí vzniknout bez user gesture). Helper `tone(freq, duration, type, volume)` → oscillator + gain envelope (5ms attack + exponential decay) = krátký "click", ne hučení. Zvuky:
+  - **Move**: sine 200 Hz / 60 ms, vol 0.18 — subtilní click.
+  - **Capture**: square 240 Hz / 70 ms + sine 180 Hz / 70 ms (40 ms gap) — "úder".
+  - **Check**: triangle 660 Hz / 150 ms, vol 0.18 — alert tón.
+  - **End** (mat / draw / resign): descending sine 440 → 330 → 220 Hz (A4 → A3 cca).
+- **SAN classifier** `playForSan(san)` — priority `# > + > x > move`. Promotion `e8=Q` jde jako move (zvuk při promoci by chtěl samostatný tier, nice-to-have). Castle `O-O`/`O-O-O` jde jako move (žádný `x`/`+`/`#` v default kingside castle).
+- **Materiálová rovnováha** `ChessLabMaterial.fromFen(fen) → {white, black, diff}` v pawn ekvivalentu (P=1, N=B=3, R=5, Q=9, K=0 — lidštější než cp; user vidí "+2 ♔" namísto "+200 cp"). `formatBadge(balance)` produkuje `+2 ♔` / `−1 ♚` / `=` (typografická pomlčka, ne ASCII hyphen). Parsuje jen piece placement field FENu (split na první mezeru).
+- **Mute toggle** s localStorage persistence (`chesslab-sounds-muted` = '0'/'1', default unmuted). `setMuted` dispatchuje `chesslab-mute-changed` CustomEvent → multi-instance synchronizace (pokud by partial běžel ve dvou tabech nebo s víc tlačítky). `bindMuteToggle(buttonId)` render `🔊`/`🔇` glyph + title + bind klik. Tlačítko žije v `play.html` `.info-bar` vedle material badge.
+- **Integrace v `play.html`**:
+  - Nová `.info-bar` v sidebaru mezi `.last-move` a `.moves` (materiál vlevo, mute vpravo).
+  - CSS pro `.info-bar` / `.material-badge` (mono font, světlé pozadí jako settings panel — izomorfně) / `.mute-btn` (transparent + tan border, hover light tan).
+  - V `applyResponse` audio synchronizováno s two-phase board animací: hráčův tah hraje hned s mezistavem (`fen_after_player_move`), engine tah hraje v 250ms setTimeout zároveň s finálním FEN renderem → zvuk vždy synchronní s tím, co vidím. Single-move case (mat po hráči / engine táhne první při hraní za černého) → jeden zvuk hned.
+  - End zvuk při `game_over=True` pokud poslední SAN neměl `#` (jinak duplicit s mate sound). 300ms delay aby zazněl po engine tahu.
+  - Material badge update z `data.fen` (finální stav po obou tazích) → `'Materiál: ' + formatBadge(...)`.
+  - `ChessLabAudio.bindMuteToggle('mute-toggle')` po `loadEngines()` (sync, nemusí čekat na async fetch).
+- **Smoke test** (uživatel ručně v browseru, OK):
+  - Zvuky hrají při hráčově i engine tahu, capture / check / mat odlišitelné sluchem.
+  - Mute persists přes F5 (localStorage).
+  - Material badge mění hodnotu po každém braní.
+- **Vědomě vynecháno** (zaznamenáno v IDEAS):
+  - **Audio + badge v `/pgn` / `/arena` / `/games`** — partial je obecný, jen include + bind. V `/pgn` step-by-step viewer by zvuk byl smysluplný (každý ← / → = playForSan), v `/arena` spíš otravný (rychlá série), v `/games` při klik na řádek = handoff do `/pgn`, takže nepotřebuje vlastní.
+  - **Promotion zvuk** — `=Q` nemá vlastní tier (hraje jako move). Hodilo by se: vyšší triangle pro promoci, kombinovaný s mate/check pokud zároveň.
+  - **Volume slider** — momentálně hardcoded volumes (0.12-0.20). Pokud user řekne "moc nahlas", přidám slider vedle mute btn.
+
 ## 2026-05-17 — Round-robin turnaj + Bayesian Elo (Bradley-Terry MLE)
 
 - **Cíl**: lepší konvergence rating systému než per-game FIDE Elo s K=40. Round-robin (každý engine vs každý) + batch refit ratingů přes maximum-likelihood Bradley-Terry s anchor a virtual draw priorou.

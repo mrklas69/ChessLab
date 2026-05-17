@@ -30,6 +30,10 @@ Raw nápady / vize / nice-to-have. Z těchto vznikají úkoly do `TODO.md`, **ne
 - **Heatmap útoků/obran** — barevné zvýraznění polí.
 - **Coordinate trainer** — trénink hledání polí naslepo.
 - **Vlastní theming** šachovnice (převzít z `Chess/01-05` — 5 hotových stylů).
+- ~~**Audio feedback na tahy + materiálová badge + mute toggle**~~ — **HOTOVO 2026-05-17 na `/play`**, viz DONE. Sdílený partial `_chesslab_audio.html`, Web Audio synthesis (žádné mp3 v repu). Rozšíření do dalších šablon je samostatný úkol (viz dále).
+- **Audio + material badge v `/pgn` step-by-step vieweru** — partial je obecný (`ChessLabAudio.playForSan(san)` + `ChessLabMaterial.fromFen(fen)`), stačí include + bind. Pro `/pgn` by zvuk při ← / → krokování dával smysl, materiál v sidebaru taky. `/arena` přeskočit (rychlá série tahů = otravné).
+- **Promotion zvuk** v `ChessLabAudio` — `=Q`/`=R`/`=B`/`=N` má zatím default move sound. Mohl by mít vlastní vyšší triangle tier, kombinovaný s check/mate pokud zároveň.
+- **Volume slider** vedle mute toggle — momentálně hardcoded volumes 0.12-0.20 v `tone()`. Pokud user řekne "moc nahlas", přidat slider 0-1 s localStorage persistence (stejný pattern jako mute key).
 
 ## Data
 
