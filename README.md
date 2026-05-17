@@ -21,6 +21,7 @@ Osobní šachová laboratoř — lokální Python aplikace s webovým UI, která
 - **Vlastní enginy** — UCI binárky generované z `chesslab.engines.*` přes `uv sync`, auto-discovery v Play i Aréně, sdílená UCI smyčka (`engines/_protocol.py`). Discovery endpoint: `GET /api/engines/list`.
     - **v0: Random Mover** (`.venv\Scripts\chesslab-random.exe`) — náhodný legální tah.
     - **v1: Greedy Material** (`.venv\Scripts\chesslab-greedy.exe`) — 1-ply lookahead nad materiálem (Kaufman piece values + mate/stalemate/check bonusy). +300 Elo nad Random.
+    - **v2.5: Minimax + α-β + endgame heuristika** (`.venv\Scripts\chesslab-minimax.exe`) — negamax depth 2 s alpha-beta, material eval + check bonus + king-tropism / edge distance pro silnější stranu v koncovce (řeší KR-vs-K mate, který depth 2 jinak nevidí). **+511 Elo nad Greedy v1** (95 % skóre v 20 partiích), ≥ +511 nad Random. Skok +320 Elo nad původní v2.0 jen endgame heuristikou.
 - **OpenAPI dokumentace** na `/docs`, health endpoint na `/health`.
 
 Roadmapa viz [TODO.md](TODO.md) a [IDEAS.md](IDEAS.md).

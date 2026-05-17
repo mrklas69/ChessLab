@@ -2,6 +2,27 @@
 
 Hotové úkoly. Nejnovější nahoře.
 
+## 2026-05-17 — Engine v2.5: endgame heuristika (king tropism + edge distance)
+
+- **`_endgame_bonus(board) -> int`** v `minimax_engine.py` — bonus pro silnější stranu v koncovce. Threshold: total non-pawn non-king material ≤ 1300 cp (pod tím se zapne). Jen pro stm s material balance ≥ 100 cp (= aspoň pawn převaha) — slabší strana bonus nemá. Dvě složky: (a) edge distance soupeřova krále od centra × 12 (max +36 v rohu), (b) (8 - king distance) × 3 (max +21 v opozici). Strop ~57 cp = pod hodnotou pěšce → material calculus stále dominuje, bonus rozhoduje **jen** tie-break tahů krále.
+- **Integrace**: volá se na konci `_evaluate_for_side_to_move`. Vrací 0 mimo endgame nebo bez převahy → middlegame eval čistě materiální, žádná deformace.
+- **Verze bump**: `v2` → `v2.5`. Display name v `_KNOWN_ENGINES` + `ENGINE_NAME`. Console script `chesslab-minimax` (in-place upgrade — pokud chceme historický v2.0 baseline, je v gitu commit `cec0d0c..` před tímto).
+- **Smoke test Aréna** (Minimax v2.5 vs Greedy v1, 20 partií, 0.05s/tah):
+  - **18W-0L-2D, 95 %, perf rating +511.5 Elo (exact)** — proti v2.0 (+190.8 Elo): **skok +320 Elo** jen endgame heuristikou.
+  - **Draw rate 30-50 % → 5 %**. 18× CHECKMATE (vč. 151/168-tahových KR-vs-K, které engine teď dotahuje), 1× INSUFFICIENT_MATERIAL, 1× SEVENTYFIVE_MOVES (75-tahový limit bez progresu).
+- **Quick unit test** před arenou: KR-vs-K white-to-move (slabší král na d7, silnější na d5, věž d1) → bonus 42; stejná pozice, černý na tahu (loser) → 0; choose_move v KR-vs-K (Ke3+Rh1 vs Ke6) → Rh6 (rook cut-off, legit mating technique). Heuristika se aktivuje a netvoří middlegame artefakty (startpos = 0).
+- **Vědomě vyloučeno z v2.5** (zaznamenáno IDEAS): scaling endgame_weight (binární threshold stačí pro většinu KR/KQ pozic), passed pawn bonus (pawn endgames jsou jiná dynamika — kandidát na v2.6), KP-vs-K specifické tablebase scoring.
+
+## 2026-05-17 — Engine v2 Minimax + alpha-beta (depth 2)
+
+- **Engine v2 Minimax** (`src/chesslab/engines/minimax_engine.py`) — negamax framework s alpha-beta pruningem, fixní hloubka `_DEPTH = 2` (vidíme náš tah + soupeřovu odpověď). Eval-from-side-to-move (standard pro negamax — odpadá duplikace max/min logiky), eval funkce sdílí konstanty s Greedy v1 (Kaufman material + `_CHECK_BONUS = 30`, `_MATE_SCORE = 100_000`) — záměrně, aby srovnání v2 vs v1 měřilo **jen** přínos alpha-beta search, ne změnu eval. Top-level loop unrolled (potřebujeme zpět tah, ne jen skóre). Random tie-break z best moves (deterministický engine v Aréně = repetition draws). console_script entry `chesslab-minimax`, registrován v `_KNOWN_ENGINES`.
+- **Vědomě vyloučeno z v2.0** (každé +50-200 řádků, kazí čistou izolaci přínosu α-β): move ordering (MVV-LVA), quiescence search, iterative deepening + TT, mate-distance scoring, configurable depth přes UCI option (sdílený `_protocol.run_uci_loop` options nepodporuje), positional eval. Vše motivace pro v2.1+ — viz IDEAS.
+- **Smoke test v Aréně** (time_per_move 0.05s, 10 partií, alternace barev):
+  - **Minimax v2 vs Greedy v1**: 6W-1L-3D, score 7.5/10 (75 %), **perf rating +190.8 Elo** (exact, ne bound). 8/10 partií skončilo matem (CHECKMATE), 3/10 INSUFFICIENT_MATERIAL — engine v koncovkách bez progresivní heuristiky stále občas patuje.
+  - **Minimax v2 vs Random v0**: 10-0 sweep, vše matem, **perf rating ≥ +511 Elo** (lower bound). Konzistentně tranzitivní s Greedy vs Random (+301 Elo) → Minimax o ~+210 Elo nad Greedy v0 baseline.
+- **Pod odhadem +400-600 Elo nad Greedy** (jen +191). Příčina viditelná v PGN: Minimax dělá taktické chyby 3+ plies hluboko (např. Qd5 → Qa4+ → Qb5 → Bxb5+ je 4-ply forced sekvence, kterou depth 2 nevidí — klasický horizon effect). Quiescence / depth 3 jsou jasné next steps; zaznamenáno v IDEAS.
+- README aktualizován o v2 řádek v sekci Vlastní enginy.
+
 ## 2026-05-17 — Engine v1 Greedy + Arena dropdown + display name registry
 
 - **Engine v1 Greedy Material** (`src/chesslab/engines/greedy_engine.py`) — 1-ply lookahead nad materiálem. Kaufman piece values v centipawnech (P=100, N=320, B=330, R=500, Q=900, K=0). Random tie-break ze sady tahů s max eval (deterministický engine = nuda + repetition draws). Bonus heuristiky: mate (+100000), stalemate (-100000), check (+30). Bez bonusů Greedy konzistentně **patoval Random** v KvK koncovce (10/10 remíz!), s bonusy **7-0-3 vs Random = +301.3 Elo**. console_script entry `chesslab-greedy`, registrován v `_KNOWN_ENGINES`.
