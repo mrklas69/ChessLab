@@ -2,6 +2,41 @@
 
 Hotové úkoly. Nejnovější nahoře.
 
+## 2026-05-17 — /games per-account filter (3. sezení dne)
+
+Když user importuje partie z víc účtů (typicky Lichess + chess.com), `/games` tabulka je dosud spojuje. Tento commit přidá dropdown "Účet" v filter baru, který filtruje per `(source, username)` kombinaci.
+
+### Backend
+- **`games.py`**:
+  - `list_games()` přidán `source: str | None = None` parametr (paired s `username` pro per-account filtr).
+  - Nová `list_distinct_accounts() -> list[dict]` — `SELECT source, username, COUNT(*) GROUP BY source, username ORDER BY count DESC, username ASC`. Vrací `[{"source": ..., "username": ..., "count": N}]`.
+- **`app.py`**:
+  - `/api/games` rozšířen o `source` query param.
+  - Nový `GET /api/games/accounts` (vrací `list_distinct_accounts()`).
+
+### Frontend (`games.html`)
+- Nový `<select id="f-account">` v filter baru, hidden by default (CSS `display:none` na select i labelu).
+- `loadAccounts()` v init flow (paralelně s `/count` přes `Promise.all`):
+  - Pokud `accounts.length <= 1` → dropdown zůstává hidden (single-account = zbytečný UI šum).
+  - Jinak populate options jako `"Bete1geuse · chess.com (500)"`, value = `"chesscom:Bete1geuse"` (source:username).
+  - Source label mapping: `SOURCE_LABELS = {lichess: 'Lichess', chesscom: 'chess.com'}`.
+- LS persistence pod `chesslab-games-filter-account` — jen account, ostatní filtry (color/result/speed) zůstávají ad-hoc (KISS, account je "primární" volba).
+- `readFilters()` rozparsuje `"source:username"` přes `indexOf(':')` + `substring()` (NE `split(':')[0/1]`, aby username obsahující `:` neuseklo prostředek).
+- `change` listener navíc save do LS, pak `loadGames()`.
+
+### Smoke test
+- 2 accounts v DB: `chesscom:Bete1geuse 500` + `lichess:TirelessWoodpusher 500`.
+- `/api/games/accounts` vrací oba.
+- `/api/games?source=chesscom&username=Bete1geuse&limit=3` → jen chess.com partie (`tringtring21`, `edvard_galstyan56`, `badridas613`).
+- `/api/games?source=lichess&username=TirelessWoodpusher&limit=3` → jen Lichess partie.
+- `/games` HTTP 200, HTML obsahuje `f-account` select.
+
+### Pozn.
+- Stale LS hodnota (account smazaný z DB) → `select.value = saved` silently no-op, fallback na default "Vše". Žádný extra error handling potřeba.
+- Mimo scope: oba accounty mají přesně 500 partií → narážejí na default `max_games` při importu (separátní bug/feature).
+
+---
+
 ## 2026-05-17 — chess.com import (2. sezení dne)
 
 Druhý zdroj partií vedle Lichess. API je odlišný model (dvoukrokový: archives list → měsíc), inkrementál řešíme client-side filtrem `created_at > since` (chess.com nemá `since` query param).
