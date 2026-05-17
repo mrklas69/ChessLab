@@ -63,6 +63,20 @@ class ImportResult(BaseModel):
     error_messages: list[str] = []  # první N chybových hlášek (pro debug v UI)
 
 
+class MoveEval(BaseModel):
+    """Eval + klasifikace jedné pozice partie (per ply).
+
+    `classification` je None pro ply=0 (před prvním tahem žádný "tah" neexistuje
+    → nelze klasifikovat). Pro ply ≥ 1 je vždy vyplněna (computed z drop ve
+    win-probability mezi ply-1 → ply, z pohledu hráče, který táhl).
+    """
+
+    ply: int
+    eval_cp: int | None = None
+    mate_in: int | None = None
+    classification: str | None = None  # 'best' | 'good' | 'inaccuracy' | 'mistake' | 'blunder'
+
+
 # === Insert ==================================================================
 # Pojmenované parametry (:foo) přímo mapují na klíče z model_dump() — zero glue.
 _INSERT_SQL = """
@@ -182,6 +196,63 @@ def count_games() -> int:
 # Kolik chybových hlášek max uložit do ImportResult.error_messages (jinak by
 # si user mohl naplnit paměť opakovaným voláním s broken username).
 _MAX_ERROR_MESSAGES = 10
+
+
+# === Move evals (klasifikace tahů) ===========================================
+# Plní se lazy on-demand z `classifier.classify_game()`. Uložíme všechny plies
+# najednou (transakce přes connect() context manager), čteme jako list seřazený
+# podle ply.
+
+
+# INSERT OR REPLACE — při re-classify (jiný time_per_move) přepíšeme existující
+# záznam. PK (game_id, ply) garantuje, že je max 1 řádek per (game, ply).
+_INSERT_MOVE_EVAL_SQL = """
+INSERT OR REPLACE INTO move_evals (
+    game_id, ply, eval_cp, mate_in, classification, analyzed_at, time_per_move
+) VALUES (
+    :game_id, :ply, :eval_cp, :mate_in, :classification, :analyzed_at, :time_per_move
+)
+"""
+
+
+def insert_move_evals(game_id: str, evals: list[MoveEval], time_per_move: float) -> None:
+    """Uloží evals pro celou partii do `move_evals`. Idempotentní (REPLACE).
+
+    Celý batch je jedna transakce přes `connect()` — buď se uloží všechno,
+    nebo nic. Pro 80-plies partii to je 81 řádků, naprosto bezbolestné.
+    """
+    now_ms = int(time.time() * 1000)
+    with connect() as conn:
+        for ev in evals:
+            row = ev.model_dump()
+            row["game_id"] = game_id
+            row["analyzed_at"] = now_ms
+            row["time_per_move"] = time_per_move
+            conn.execute(_INSERT_MOVE_EVAL_SQL, row)
+
+
+def get_move_evals(game_id: str) -> list[MoveEval]:
+    """Vrátí seznam evals pro partii, seřazený podle ply. Prázdný list pokud nic."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT ply, eval_cp, mate_in, classification "
+            "FROM move_evals WHERE game_id = ? ORDER BY ply",
+            (game_id,),
+        ).fetchall()
+    return [MoveEval(**dict(r)) for r in rows]
+
+
+def has_classification(game_id: str) -> bool:
+    """True pokud existuje aspoň jeden záznam v `move_evals` pro tento game_id.
+
+    Lehký check (LIMIT 1) — používá se pro lookup-or-compute pattern v
+    `classifier.get_or_classify_game()`.
+    """
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM move_evals WHERE game_id = ? LIMIT 1", (game_id,)
+        ).fetchone()
+    return row is not None
 
 
 def import_lichess_user(username: str, max_games: int) -> ImportResult:

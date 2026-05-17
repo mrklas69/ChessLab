@@ -2,6 +2,39 @@
 
 Hotové úkoly. Nejnovější nahoře.
 
+## 2026-05-17 — Klasifikace tahů (Stockfish + lichess sigmoid + cache)
+
+- **Schema** v `db.py` — nová tabulka `move_evals` (game_id, ply, eval_cp, mate_in, classification, analyzed_at, time_per_move) s composite PK `(game_id, ply)` + FK `ON DELETE CASCADE`. Idempotentní `CREATE IF NOT EXISTS` (per pattern celé schemata). Per-tah eval; ply=0 = startovní pozice, classification=NULL (žádný tah jí nepředchází). Per `INSERT OR REPLACE` upsert pattern → re-classify s jiným time_per_move přepíše záznamy.
+- **DB ops** v `games.py`: `MoveEval` Pydantic model + `insert_move_evals(game_id, evals, time_per_move)` (batch transakce, model_dump → SQL params) + `get_move_evals(game_id) -> list[MoveEval]` + `has_classification(game_id) -> bool` (lehký LIMIT 1 check pro lookup-or-compute pattern).
+- **Klasifikační modul** `src/chesslab/classifier.py` (nový):
+  - **Lichess sigmoid** `_cp_to_winning_chances(cp, mate_in)` — `2 / (1 + exp(-0.00368208 * cp)) - 1`, vrátí [-1, +1] z perspektivy bílého. Mate hardcoded na ±1 (zjednodušení vůči lichess lineárnímu scale po mate_in — pro klasifikaci tahů rozdíl mate-in-1 vs mate-in-30 prakticky nedělá nic).
+  - **`_cp_to_win_pct_white`** → [0, 100] %. Sanity: cp=+100 → 59 %, cp=+500 → 86 %, cp=+1000 → 97 %.
+  - **`_classify_drop(wp_drop)`** — drop ve win % z pohledu hráče: ≥20 % blunder, ≥10 % mistake, ≥5 % inaccuracy, ≥2 % good, jinak best. Lichess defaults ?!/?/?? + naše doplnění good/best (lichess je nerozlišuje, my chceme barevný tag pro UX i u řadových tahů).
+  - **`_terminal_wp_white(fen)`** — reconstruct board z FEN, mat → 100 % matujícímu (vítěz = strana NEna tahu po posledním tahu), draw → 50 %. Bez tohoto by koncový mat dostal "wp_after = 50 % default" a klasifikoval se jako blunder z výhry.
+  - **`classify_game(pgn, time_per_move=0.3)`** — parse PGN → fens, persistent Stockfish přes `analyse_game_fens`, per ply spočítá wp_drop z perspektivy táhnoucího hráče (white pro lichý ply, black pro sudý). Vrátí list MoveEval délky N+1.
+  - **`get_or_classify_game(game_id, time_per_move=0.3)`** — lookup-or-compute: `has_classification` → vrátí cached, jinak fetch PGN, klasifikuje, uloží, vrátí.
+- **Endpoints** v `app.py`:
+  - `POST /api/games/{id}/classify?time_per_move=0.3` — fresh nebo cached compute, vrátí `ClassificationResponse {game_id, evals, cached}`. Status mapping: 404 partie chybí, 400 špatný time_per_move, 500 chybějící Stockfish.
+  - `GET /api/games/{id}/classification` — jen cached, 404 pokud chybí (žádný Stockfish call). Pro frontend "zkontroluj, jestli existuje, a pokud ne, zobraz tlačítko Klasifikovat".
+- **Frontend** `templates/pgn.html`:
+  - **CSS**: `.cls-best/-good/-inaccuracy/-mistake/-blunder` (zelená/šedá/žlutá/oranžová/červená) pro tagy v move list, `.cls-pill.*` pro souhrn pillů.
+  - **HTML**: nový container pod eval grafem s tlačítkem "Klasifikovat tahy" + status + souhrn (např. "35 nejlepších · 5 dobrých · 9 nepřesností · 3 chyby · 2 hrubky").
+  - **JS**: `state.classifications` mapa ply→eval, `state.gameId` z handoff. `classifyGame()` (POST), `loadCachedClassification(gameId)` (GET cached), `applyClassifications(evals)` (state + re-render moves + summary), `renderClsSummary(evals)` (pill per kategorie, skip 0 výskytů), `renderMoveHtml(move)` (přidá `<span class="cls-tag">` s glyph: ✓ / (nic) / ?! / ? / ??). Tooltip s českým popiskem.
+  - **Tlačítko enabled jen pokud `state.gameId` existuje** — klasifikace cache v DB per game_id, ručně vložený PGN do textarea nemá game_id (= no cache). Tooltip "Vyžaduje partii z /games".
+  - **Handoff `/games → /pgn`**: `games.html` ukládá `chesslab-pending-game-id` do localStorage vedle PGN. `pgn.html` handler ho přečte, naplní `state.gameId`, po loadu zkusí `loadCachedClassification` → pokud cached, tagy se hned zobrazí (bez Stockfish call).
+- **Smoke test E2E**: random partie z DB (`xkOmmJ8X`, 54 plies):
+  - `GET /classification` před classify → HTTP 404 (jak má být).
+  - `POST /classify` fresh → 15.8s, 55 evals, `cached=False`. Klasifikace: 35 best / 5 good / 9 inaccuracy / 3 mistake / 2 blunder = 54 ✓ (ply 0 nemá classification).
+  - `POST /classify` podruhé → **0.2s, cached=True** (79× rychlejší cache hit ✓).
+  - `GET /classification` po classify → HTTP 200.
+  - Terminal mate handling ověřen: ply 51 měl `eval_cp=None` (game_over), klasifikace 'blunder' korektně spočtena z `_terminal_wp_white` fallbacku.
+- **Vědomě vyloučeno z této iterace** (zaznamenáno v IDEAS pro budoucí iterace):
+  - **Brilliant/Great kategorie** (lichess !!/!) — vyžadovaly by sacrifice detekci + only-move check, navíc ~100 řádků a okrajový případ.
+  - **Souhrn v `/games` tabulce** + sloupec s mini-grafem (2! 5? 1??) + filter "show games with N+ blunders".
+  - **Asynchronní background job** (queue + status endpoint) — pro on-demand jednu partii je 15-30s wait akceptovatelné, pro batch klasifikaci všech 100 partií ne. Až bude potřeba.
+  - **Custom time_per_move v UI** — backend přijímá, frontend posílá default 0.3s (slider přidáme, pokud bude poptávka).
+  - **Klasifikace ručně vloženého PGN** (bez game_id) — vyžadovala by samostatný endpoint `POST /api/classifier/classify_pgn` bez DB persistence. Workaround: importuj přes `/import` → otevři přes `/games`.
+
 ## 2026-05-17 — Engine v2.7: Move ordering (MVV-LVA)
 
 - **`_mvv_lva_score(board, move) -> int`** v `minimax_engine.py` — `victim_value * 10 - aggressor_value`. Multiplikátor 10 zaručí, že **rozdíl ve victim tier vždy přebije rozdíl v aggressor**: PxQ=8900 (vyhráváme dámu) > QxR=4100 > QxB=2400. Aggressor jen rozhoduje tie-break mezi captures se stejnou obětí — pro jezdce: PxN=3100 > NxN=2880 > BxN=2870 > RxN=2700 > QxN=2300 (vyhrát figuru levně > vyhrát ji draho, protože při recapture ztrácíme míň). Non-captures dostanou score 0 → půjdou za všemi captures. **En passant edge case**: `board.piece_at(move.to_square)` vrátí `None` pro EP (beraný pěšec stojí na sousedním poli), `board.is_en_passant(move)` to detekuje → victim hardcoded PAWN.

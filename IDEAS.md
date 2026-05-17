@@ -18,7 +18,7 @@ Raw nápady / vize / nice-to-have. Z těchto vznikají úkoly do `TODO.md`, **ne
 
 ## Analýza
 
-- **Klasifikace tahů** podle Stockfish: brilliant / great / good / inaccuracy / mistake / blunder (per chess.com / lichess).
+- ~~**Klasifikace tahů** podle Stockfish: brilliant / great / good / inaccuracy / mistake / blunder (per chess.com / lichess).~~ **HOTOVO 2026-05-17**, viz DONE. Lazy on-demand klasifikace s lichess sigmoid + cache v `move_evals`, barevné tagy v /pgn vieweru. (Brilliant/great heuristika vynechána — vyžadovala by sacrifice/only-move detekci.)
 - **Opening identification** — porovnání s ECO databází.
 - **Endgame tablebases** — Syzygy 6-figure pro perfektní analýzu koncovek.
 - **Pattern recognition** — vidlice, špíz, vazba, mat v X tahů (taktická anotace).

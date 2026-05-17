@@ -349,7 +349,9 @@ $('tbody').addEventListener('click', async (e) => {
         const pgnText = await resp.text();
         // Handoff přes localStorage — /pgn handler ho přečte na load,
         // naloaduje a auto-spustí analýzu (viz pgn.html).
+        // game_id navíc povolí klasifikaci tahů (cache v DB per game_id).
         localStorage.setItem('chesslab-pending-pgn', pgnText);
+        localStorage.setItem('chesslab-pending-game-id', gameId);
         window.open('/pgn', '_blank');
     } catch (err) {
         alert(`Síťová chyba: ${err.message}`);

@@ -65,6 +65,23 @@ CREATE TABLE IF NOT EXISTS games (
 CREATE INDEX IF NOT EXISTS idx_games_username   ON games (username);
 CREATE INDEX IF NOT EXISTS idx_games_created_at ON games (created_at);
 CREATE INDEX IF NOT EXISTS idx_games_source     ON games (source);
+
+-- Per-ply eval z Stockfish analýzy + klasifikace tahu (best/good/inaccuracy/
+-- mistake/blunder). Plní se lazy on-demand (POST /api/games/{id}/classify),
+-- není povinná — partie bez klasifikace se zobrazí normálně, jen bez tagů.
+-- Composite PK (game_id, ply) zajistí, že existuje max 1 záznam per pozice;
+-- re-classify s jiným time_per_move přepíše (INSERT OR REPLACE v insert SQL).
+CREATE TABLE IF NOT EXISTS move_evals (
+    game_id          TEXT NOT NULL,           -- FK → games.id
+    ply              INTEGER NOT NULL,         -- 0 = startovní pozice, 1 = po 1. tahu, …
+    eval_cp          INTEGER,                  -- centipawn eval (perspektiva bílého), NULL pro mate/game_over
+    mate_in          INTEGER,                  -- mate-in-N (kladné = bílý matuje), NULL pokud není mate
+    classification   TEXT,                     -- 'best'|'good'|'inaccuracy'|'mistake'|'blunder', NULL pro ply=0
+    analyzed_at      INTEGER NOT NULL,         -- unix ms (kdy se to spočítalo)
+    time_per_move    REAL NOT NULL,            -- budget použitý pro analýzu (pro re-analýzu rozlišení)
+    PRIMARY KEY (game_id, ply),
+    FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE
+);
 """
 
 

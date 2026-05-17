@@ -214,6 +214,57 @@ button:disabled, button:disabled:hover {
 }
 .eval-graph-svg .graph-dot { cursor: pointer; }
 .eval-graph-svg .graph-dot:hover { r: 5; }
+/* === Classification (per-tah tagy + souhrn) ============================== */
+.classification-container {
+    margin-top: 16px;
+    padding: 12px;
+    border: 1px solid #ddd;
+    background: #fafaf6;
+    border-radius: 4px;
+}
+.classification-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 10px;
+    flex-wrap: wrap;
+}
+.classification-header button { margin: 0; }
+.classification-status {
+    font-size: 0.85em;
+    color: #888;
+    font-family: 'Consolas', 'Courier New', monospace;
+}
+.classification-summary {
+    font-size: 0.9em;
+    color: #555;
+    font-family: 'Consolas', 'Courier New', monospace;
+}
+.classification-summary .cls-pill {
+    display: inline-block;
+    padding: 1px 8px;
+    margin-right: 6px;
+    border-radius: 10px;
+    font-weight: bold;
+}
+/* Klasifikační tagy v move list — vedle SAN, malé, barevné. */
+.moves .cls-tag {
+    font-size: 0.8em;
+    margin-left: 0px;
+    font-weight: bold;
+    vertical-align: super;
+    cursor: help;
+}
+.cls-best       { color: #1a6b1a; }  /* zelená — engine match */
+.cls-good       { color: #888;    }  /* šedá — solid */
+.cls-inaccuracy { color: #c8a000; }  /* žlutá — ?! */
+.cls-mistake    { color: #e08020; }  /* oranžová — ? */
+.cls-blunder    { color: #c00;    }  /* červená — ?? */
+.cls-pill.cls-best       { background: #d4e8d4; color: #1a4d1a; }
+.cls-pill.cls-good       { background: #e0e0e0; color: #555;    }
+.cls-pill.cls-inaccuracy { background: #f5e8b8; color: #6a5500; }
+.cls-pill.cls-mistake    { background: #f4d8b8; color: #6a3a00; }
+.cls-pill.cls-blunder    { background: #f5c8c8; color: #800;    }
 {% endblock %}
 
 {% block content %}
@@ -285,6 +336,16 @@ button:disabled, button:disabled:hover {
     </div>
     <svg class="eval-graph-svg" id="eval-graph-svg"></svg>
 </div>
+
+{# Klasifikace tahů — vyžaduje partii z DB (game_id přes handoff z /games).
+   PGN vložený ručně do textarea nemá game_id, takže tlačítko zůstane disabled. #}
+<div class="classification-container">
+    <div class="classification-header">
+        <button id="classify-btn" disabled title="Vyžaduje partii z /games (klasifikace se ukládá do DB)">Klasifikovat tahy (Stockfish 0.3s/tah)</button>
+        <span class="classification-status" id="classify-status">(otevři partii z /games pro klasifikaci)</span>
+        <span class="classification-summary" id="classify-summary"></span>
+    </div>
+</div>
 {% endblock %}
 
 {% block script %}
@@ -312,6 +373,12 @@ button:disabled, button:disabled:hover {
         analysisAbort: null,
         // Výsledek /api/engine/analyse_game — {evals, time_per_move, total_time} nebo null.
         gameEvals: null,
+        // Klasifikace tahů — pouze pokud máme gameId (handoff z /games).
+        // Mapa ply (int) -> {classification, eval_cp, mate_in}. Null pokud neexistuje.
+        classifications: null,
+        // ID partie v DB — naplní handoff z /games. Bez něj tlačítko Klasifikovat
+        // zůstane disabled (klasifikace se ukládá per game_id).
+        gameId: null,
     };
 
     // === DOM reference ======================================================
@@ -329,6 +396,29 @@ button:disabled, button:disabled:hover {
     const $analyseGameBtn = document.getElementById('analyse-game-btn');
     const $analyseGameStatus = document.getElementById('analyse-game-status');
     const $evalGraphSvg = document.getElementById('eval-graph-svg');
+    const $classifyBtn = document.getElementById('classify-btn');
+    const $classifyStatus = document.getElementById('classify-status');
+    const $classifySummary = document.getElementById('classify-summary');
+
+    // === Klasifikace: glyphy + helpery =====================================
+    // Glyph per kategorie — lichess konvence (?! ? ??). 'best' = ✓ (zelená),
+    // 'good' = nezobrazujem (řadové tahy, žádný tag = méně vizuálního šumu).
+    const CLS_GLYPH = {
+        best: '✓',
+        good: '',  // skip render — solidní tahy nepotřebují tag
+        inaccuracy: '?!',
+        mistake: '?',
+        blunder: '??',
+    };
+    // České popisky pro tooltip + souhrn.
+    const CLS_LABEL = {
+        best: 'Nejlepší',
+        good: 'Dobrý',
+        inaccuracy: 'Nepřesnost',
+        mistake: 'Chyba',
+        blunder: 'Hrubka',
+    };
+    const CLS_ORDER = ['best', 'good', 'inaccuracy', 'mistake', 'blunder'];
 
     // === Načtení PGN ze serveru =============================================
     async function loadPGN() {
@@ -367,8 +457,12 @@ button:disabled, button:disabled:hover {
             $analyseBtn.disabled = false;
             $autoToggle.disabled = false;
             $analyseGameBtn.disabled = false;
+            // Klasifikační tlačítko vyžaduje game_id (klasifikace cache v DB).
+            // Pokud user vložil PGN ručně bez handoff, tlačítko zůstane disabled.
+            $classifyBtn.disabled = !state.gameId;
             clearAnalysis();
             clearGraph();
+            clearClassifications();
             // Auto-režim: pokud je zaškrtnutý už při loadu, hned analyzuj výchozí pozici.
             if (state.autoAnalyse) analyse();
             // Sundáme focus z textarea, ať klávesy ←/→ fungují hned.
@@ -408,6 +502,22 @@ button:disabled, button:disabled:hover {
     }
 
     // === Render move listu ==================================================
+    // Pomocná: render SAN + optional klasifikační tag pro ply N.
+    // Tag se přidá jen pokud máme classifications a glyph není prázdný
+    // (good = bez tagu, méně vizuálního šumu).
+    function renderMoveHtml(move) {
+        const sanHtml = '<span class="move" data-ply="' + move.ply + '">' + escapeHtml(move.san) + '</span>';
+        if (!state.classifications) return sanHtml;
+        const cls = state.classifications[move.ply];
+        if (!cls || !cls.classification) return sanHtml;
+        const glyph = CLS_GLYPH[cls.classification] || '';
+        if (!glyph) return sanHtml;
+        const label = CLS_LABEL[cls.classification] || cls.classification;
+        return sanHtml +
+            '<span class="cls-tag cls-' + cls.classification + '" title="' + escapeHtml(label) + '">' +
+            escapeHtml(glyph) + '</span>';
+    }
+
     function renderMoves() {
         const moves = state.game.moves;
         const parts = [];
@@ -417,10 +527,8 @@ button:disabled, button:disabled:hover {
             const black = moves[i + 1];
             parts.push(
                 '<span class="move-no">' + moveNo + '.</span>' +
-                '<span class="move" data-ply="' + white.ply + '">' + escapeHtml(white.san) + '</span>' +
-                (black
-                    ? '<span class="move" data-ply="' + black.ply + '">' + escapeHtml(black.san) + '</span>'
-                    : '')
+                renderMoveHtml(white) +
+                (black ? renderMoveHtml(black) : '')
             );
         }
         $moves.innerHTML = parts.join(' ');
@@ -734,6 +842,117 @@ button:disabled, button:disabled:hover {
         }
     }
 
+    // === Klasifikace tahů ===================================================
+
+    // Aplikuje pole MoveEval[] do state.classifications (mapa ply -> eval/cls)
+    // a překreslí move list + souhrn.
+    function applyClassifications(evals) {
+        if (!evals || evals.length === 0) {
+            state.classifications = null;
+            $classifySummary.innerHTML = '';
+            if (state.game) renderMoves();
+            return;
+        }
+        const map = {};
+        for (const e of evals) {
+            map[e.ply] = e;
+        }
+        state.classifications = map;
+        renderClsSummary(evals);
+        if (state.game) renderMoves();
+    }
+
+    // Souhrn = pill per kategorie (kolik bylo nejlepších, nepřesností, …).
+    // Skip ply=0 (startovní pozice, žádný tah ji nepředchází) a kategorie
+    // s 0 výskyty (nezahlcujeme UI nuly).
+    function renderClsSummary(evals) {
+        const counts = {};
+        for (const e of evals) {
+            if (!e.classification) continue;  // ply=0 nebo nezpracováno
+            counts[e.classification] = (counts[e.classification] || 0) + 1;
+        }
+        const parts = [];
+        for (const cls of CLS_ORDER) {
+            const n = counts[cls] || 0;
+            if (n === 0) continue;
+            const label = CLS_LABEL[cls];
+            parts.push(
+                '<span class="cls-pill cls-' + cls + '" title="' + escapeHtml(label) + '">' +
+                n + ' ' + escapeHtml(label.toLowerCase()) + '</span>'
+            );
+        }
+        $classifySummary.innerHTML = parts.join('');
+    }
+
+    // Smaže klasifikace ze state — voláme při loadu nové partie.
+    function clearClassifications() {
+        state.classifications = null;
+        $classifySummary.innerHTML = '';
+        if (!state.game) {
+            $classifyStatus.textContent = '(nejdřív načti partii)';
+        } else if (!state.gameId) {
+            $classifyStatus.textContent = '(klasifikace vyžaduje partii z /games)';
+        } else {
+            $classifyStatus.textContent = '(klikni pro klasifikaci tahů)';
+        }
+    }
+
+    // POST /api/games/{id}/classify — spustí fresh nebo vrátí cached.
+    async function classifyGame() {
+        if (!state.gameId) return;
+        $classifyBtn.disabled = true;
+        const startedAt = Date.now();
+        // Pesimistický odhad: ~0.4s/tah (Stockfish 0.3s + IPC overhead).
+        const expectedTotal = state.game ? state.game.moves.length * 0.4 + 1 : 30;
+        const tick = setInterval(() => {
+            const elapsed = (Date.now() - startedAt) / 1000;
+            $classifyStatus.textContent =
+                'Klasifikuji… ' + elapsed.toFixed(1) + 's / ~' + expectedTotal.toFixed(0) + 's';
+        }, 200);
+        try {
+            const resp = await fetch(
+                '/api/games/' + encodeURIComponent(state.gameId) + '/classify',
+                { method: 'POST' }
+            );
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                const msg = typeof err.detail === 'string' ? err.detail : 'Chyba ' + resp.status;
+                $classifyStatus.textContent = 'Chyba: ' + msg;
+                return;
+            }
+            const data = await resp.json();
+            applyClassifications(data.evals);
+            const elapsed = (Date.now() - startedAt) / 1000;
+            $classifyStatus.textContent =
+                data.cached
+                    ? '(z cache, ' + data.evals.length + ' pozic)'
+                    : 'Hotovo (' + elapsed.toFixed(1) + 's, ' + data.evals.length + ' pozic)';
+        } catch (e) {
+            $classifyStatus.textContent = 'Chyba: ' + e.message;
+        } finally {
+            clearInterval(tick);
+            $classifyBtn.disabled = !state.gameId;
+        }
+    }
+
+    // GET /api/games/{id}/classification — jen cached, žádný Stockfish call.
+    // Volá se z handoff bloku: pokud cache existuje, hned zobraz tagy.
+    async function loadCachedClassification(gameId) {
+        try {
+            const resp = await fetch(
+                '/api/games/' + encodeURIComponent(gameId) + '/classification'
+            );
+            if (resp.status === 404) return false;  // ještě nebyla spočtena
+            if (!resp.ok) return false;
+            const data = await resp.json();
+            applyClassifications(data.evals);
+            $classifyStatus.textContent = '(z cache, ' + data.evals.length + ' pozic)';
+            return true;
+        } catch (e) {
+            return false;
+        }
+    }
+
     async function analyse() {
         const fen = currentFen();
         if (!fen) return;
@@ -849,6 +1068,7 @@ button:disabled, button:disabled:hover {
         if (state.autoAnalyse && state.game) analyse();
     });
     $analyseGameBtn.addEventListener('click', analyseGame);
+    $classifyBtn.addEventListener('click', classifyGame);
 
     // ResizeObserver — při změně šířky okna překresli graf (SVG souřadnice jsou v px).
     // (Cheap: jen překreslíme když máme co kreslit.)
@@ -863,21 +1083,30 @@ button:disabled, button:disabled:hover {
         }
     });
 
-    // === Pending PGN handoff z /play =======================================
-    // Po skončení hry v /play uživatel klikne "Analyzovat partii" → PGN se uloží
+    // === Pending PGN handoff z /play nebo /games ===========================
+    // Po skončení hry v /play (resp. po klik na řádek v /games) se PGN uloží
     // do localStorage a otevře se /pgn v novém tabu. Tady ho přečteme, naplníme
     // textarea, naloadujeme a hned spustíme analýzu celé partie.
+    // /games dodá navíc game_id (klasifikace cache v DB) — pokud existuje,
+    // tlačítko Klasifikovat se aktivuje a cached klasifikace se hned zobrazí.
     (async () => {
         const pendingPgn = localStorage.getItem('chesslab-pending-pgn');
         if (!pendingPgn) return;
-        // Smažeme klíč hned, ať se to nespustí znovu při dalším refreshi.
+        const pendingGameId = localStorage.getItem('chesslab-pending-game-id');
+        // Smažeme klíče hned, ať se to nespustí znovu při dalším refreshi.
         localStorage.removeItem('chesslab-pending-pgn');
+        localStorage.removeItem('chesslab-pending-game-id');
+        // gameId musí být ve state PŘED loadPGN (loadPGN dle něj aktivuje classify btn).
+        state.gameId = pendingGameId || null;
         $input.value = pendingPgn;
         await loadPGN();
-        // Pokud se PGN naparsoval úspěšně (state.game) a tlačítko je enabled,
-        // spustíme analýzu celé partie automaticky — to byl důvod handoffu.
         if (state.game && !$analyseGameBtn.disabled) {
             analyseGame();
+        }
+        // Pokud máme gameId, zkusíme načíst cached klasifikaci (žádný Stockfish).
+        // Pokud existuje, hned se zobrazí tagy. Pokud ne, user klikne tlačítko ručně.
+        if (state.gameId) {
+            await loadCachedClassification(state.gameId);
         }
     })();
 </script>

@@ -38,11 +38,15 @@ from chesslab.engine import (
     analyse_game_fens,
 )
 from chesslab.engines import EngineInfo, list_available_engines
+from chesslab.classifier import get_or_classify_game
 from chesslab.games import (
     GameSummary,
     ImportResult,
+    MoveEval,
     count_games,
     get_game_pgn,
+    get_move_evals,
+    has_classification,
     import_lichess_user,
     list_games,
 )
@@ -521,3 +525,67 @@ def api_game_pgn(game_id: str) -> Response:
         content=pgn,
         media_type="application/x-chess-pgn; charset=utf-8",
     )
+
+
+# === Classification API ======================================================
+# Per-tah klasifikace (best/good/inaccuracy/mistake/blunder) z Stockfish eval.
+# Lazy on-demand: POST spustí výpočet (synchronní, ~30s pro 80-plies partii),
+# GET vrátí cached. Re-classify s jiným time_per_move přepíše záznamy.
+
+
+class ClassificationResponse(BaseModel):
+    """Výstup endpointů /classify a /classification."""
+
+    game_id: str
+    evals: list[MoveEval]
+    cached: bool = Field(
+        ...,
+        description="True pokud vráceno z cache, False pokud čerstvě spočteno.",
+    )
+
+
+@app.post("/api/games/{game_id}/classify", response_model=ClassificationResponse)
+def api_game_classify(game_id: str, time_per_move: float = 0.3) -> ClassificationResponse:
+    """Spustí klasifikaci partie (nebo vrátí cached, pokud existuje).
+
+    Query param `time_per_move` (default 0.3s) určuje Stockfish budget per pozici
+    pro fresh classify. Pokud cache existuje, parametr se ignoruje (čte se as-is).
+
+    Synchronní — pro 80-plies partii ~24s wait. Klient by měl ukázat loader/progress.
+    """
+    if not (0.05 <= time_per_move <= 2.0):
+        raise HTTPException(
+            status_code=400,
+            detail=f"time_per_move musí být v rozsahu 0.05–2.0s (dostal {time_per_move}).",
+        )
+    was_cached = has_classification(game_id)
+    try:
+        evals = get_or_classify_game(game_id, time_per_move=time_per_move)
+    except KeyError as exc:
+        # Partie neexistuje v DB.
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        # Stockfish binárka chybí.
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except ValueError as exc:
+        # Pravděpodobně rozbitý PGN — neměl by nastat (insertujeme jen validní),
+        # ale safety net.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ClassificationResponse(game_id=game_id, evals=evals, cached=was_cached)
+
+
+@app.get("/api/games/{game_id}/classification", response_model=ClassificationResponse)
+def api_game_classification(game_id: str) -> ClassificationResponse:
+    """Vrátí cached klasifikaci. 404 pokud ještě nebyla spočtena.
+
+    Pro on-demand fresh compute použij POST /classify. Tento GET nikdy nespouští
+    Stockfish — slouží frontendu k 'check, jestli existuje, a pokud ne, zobraz
+    tlačítko Klasifikovat'.
+    """
+    if not has_classification(game_id):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Partie {game_id!r} ještě nebyla klasifikována (POST /classify ji spustí).",
+        )
+    evals = get_move_evals(game_id)
+    return ClassificationResponse(game_id=game_id, evals=evals, cached=True)
