@@ -98,6 +98,14 @@ table.games td.action a:hover { text-decoration: underline; }
    <a href="/pgn">/pgn</a> a spustí analýzu Stockfishem.</p>
 
 <div class="filters">
+    {# Account dropdown se zobrazí jen pokud je v DB víc než 1 (source, username)
+       kombinace — pro single-account use case zbytečný šum. JS po fetch /accounts
+       rozhodne show/hide. #}
+    <label for="f-account" id="f-account-label" style="display: none;">Účet:</label>
+    <select id="f-account" style="display: none;">
+        <option value="">Vše</option>
+    </select>
+
     <label for="f-color">Barva:</label>
     <select id="f-color">
         <option value="all">Vše</option>
@@ -210,6 +218,18 @@ function renderRow(g) {
 // === Načítání seznamu =======================================================
 function readFilters() {
     const params = new URLSearchParams();
+    // Account je "source:username" (např. "chesscom:Bete1geuse"). Prázdná = Vše.
+    // Split jen na prvním ':' — username teoreticky může obsahovat ':' (nepravdepodobné,
+    // ale Lichess povoluje široký range znaků). indexOf + substring je bezpečnější než
+    // split(':')[0/1], které by useknulo prostředek.
+    const account = $('f-account').value;
+    if (account) {
+        const i = account.indexOf(':');
+        if (i > 0) {
+            params.set('source', account.substring(0, i));
+            params.set('username', account.substring(i + 1));
+        }
+    }
     const color = $('f-color').value;
     const result = $('f-result').value;
     const speed = $('f-speed').value;
@@ -217,6 +237,48 @@ function readFilters() {
     if (result !== 'all') params.set('result', result);
     if (speed) params.set('speed', speed);
     return params.toString();
+}
+
+// === Account dropdown populate =============================================
+// Mapování source → human-readable label (UI). 'chesscom' → 'chess.com',
+// 'lichess' → 'Lichess'. Když přibude další zdroj, doplnit sem.
+const SOURCE_LABELS = {
+    lichess: 'Lichess',
+    chesscom: 'chess.com',
+};
+
+async function loadAccounts() {
+    // Vrátí počet accountů, ať volající ví, zda dropdown skrývat / odhalit.
+    const resp = await fetch('/api/games/accounts');
+    if (!resp.ok) return 0;
+    const accounts = await resp.json();
+    const sel = $('f-account');
+    const label = $('f-account-label');
+
+    // Single account → dropdown nemá smysl ukazovat (zbytečný UI šum).
+    if (accounts.length <= 1) {
+        sel.style.display = 'none';
+        label.style.display = 'none';
+        return accounts.length;
+    }
+
+    // Populate (po default option "Vše", která je v HTML).
+    accounts.forEach(a => {
+        const opt = document.createElement('option');
+        opt.value = `${a.source}:${a.username}`;
+        const srcLabel = SOURCE_LABELS[a.source] || a.source;
+        opt.textContent = `${a.username} · ${srcLabel} (${a.count})`;
+        sel.appendChild(opt);
+    });
+
+    // Restore z LS — pokud uložená hodnota už neexistuje v options (smazaný
+    // account), select.value silently zůstane "" (= Vše).
+    const saved = localStorage.getItem('chesslab-games-filter-account');
+    if (saved) sel.value = saved;
+
+    sel.style.display = '';
+    label.style.display = '';
+    return accounts.length;
 }
 
 // === State ==================================================================
@@ -363,11 +425,23 @@ $('tbody').addEventListener('click', async (e) => {
     $(id).addEventListener('change', loadGames);
 });
 
+// Account dropdown navíc persistuje výběr do LS (ostatní filtry ne — KISS,
+// dropdown se zapamatuje jen ten "primární" account; barva/výsledek/tempo
+// jsou ad-hoc průzkum).
+$('f-account').addEventListener('change', () => {
+    localStorage.setItem('chesslab-games-filter-account', $('f-account').value);
+    loadGames();
+});
+
 // === Initial load: count → empty state nebo loadGames =======================
 (async () => {
     try {
-        const resp = await fetch('/api/games/count');
-        const { count } = await resp.json();
+        // Paralelně count + accounts — nezávislé endpointy.
+        const [countResp, _] = await Promise.all([
+            fetch('/api/games/count'),
+            loadAccounts(),
+        ]);
+        const { count } = await countResp.json();
         if (count === 0) {
             $('empty-state').style.display = 'block';
             $('count').textContent = '0 partií';

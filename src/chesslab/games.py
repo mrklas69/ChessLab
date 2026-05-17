@@ -142,6 +142,7 @@ _ResultFilter = Literal["all", "win", "loss", "draw"]
 
 def list_games(
     *,
+    source: str | None = None,
     username: str | None = None,
     color: _ColorFilter = "all",
     result: _ResultFilter = "all",
@@ -153,9 +154,16 @@ def list_games(
     Filtry se skládají do WHERE klauzule (chybějící filtr = nic neomezuje).
     LIMIT 500 jako safety cap proti zahlcení frontendu (frontend si dál může
     pageovat / filtrovat client-side).
+
+    `source` + `username` se obvykle kombinují (per-account filtr), aby se
+    nesloučily partie ze stejné přezdívky na různých platformách. Lze je ale
+    použít i samostatně (např. všechny chess.com partie napříč účty).
     """
     where: list[str] = []
     params: dict = {}
+    if source:
+        where.append("source = :source")
+        params["source"] = source
     if username:
         where.append("username = :username")
         params["username"] = username
@@ -195,6 +203,23 @@ def count_games() -> int:
     with connect() as conn:
         row = conn.execute("SELECT COUNT(*) AS c FROM games").fetchone()
     return row["c"] if row else 0
+
+
+def list_distinct_accounts() -> list[dict]:
+    """Vrátí distinct (source, username) páry s počtem partií.
+
+    Pro /games dropdown filtr — když user importuje víc účtů (Lichess a/nebo
+    chess.com), může se mezi nimi přepínat. Seřazeno desc podle count, ať jsou
+    aktivní účty nahoře. Schema: ``[{"source": "chesscom", "username": "Bete1geuse",
+    "count": 42}, ...]``.
+    """
+    sql = (
+        "SELECT source, username, COUNT(*) AS count FROM games "
+        "GROUP BY source, username ORDER BY count DESC, username ASC"
+    )
+    with connect() as conn:
+        rows = conn.execute(sql).fetchall()
+    return [dict(r) for r in rows]
 
 
 def latest_lichess_created_at(username: str) -> int | None:

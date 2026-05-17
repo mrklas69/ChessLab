@@ -67,6 +67,7 @@ from chesslab.games import (
     has_classification,
     import_chesscom_user,
     import_lichess_user,
+    list_distinct_accounts,
     list_games,
 )
 from chesslab.lichess import DEFAULT_MAX_GAMES, HARD_MAX_GAMES
@@ -624,6 +625,7 @@ def api_import_chesscom(req: ChessComImportRequest) -> ImportResult:
 
 @app.get("/api/games", response_model=list[GameSummary])
 def api_games_list(
+    source: str | None = None,
     username: str | None = None,
     color: Literal["all", "white", "black"] = "all",
     result: Literal["all", "win", "loss", "draw"] = "all",
@@ -632,12 +634,16 @@ def api_games_list(
 ) -> list[GameSummary]:
     """Vrátí seznam stažených partií podle filtrů (od nejnovější).
 
-    Query params: ?username=foo&color=white&result=win&speed=blitz&limit=100.
+    Query params: ?source=chesscom&username=foo&color=white&result=win&speed=blitz&limit=100.
     Bez filtru = všechny partie v DB (LIMIT 500 safety cap).
+
+    `source` + `username` se obvykle kombinují (per-account filtr z UI dropdownu),
+    aby se nesloučily partie ze stejné přezdívky napříč Lichess/chess.com.
     """
     # Cap zvenku, ať klient nemůže poslat limit=1000000.
     safe_limit = max(1, min(limit, 500))
     return list_games(
+        source=source,
         username=username,
         color=color,
         result=result,
@@ -650,6 +656,16 @@ def api_games_list(
 def api_games_count() -> dict[str, int]:
     """Celkový počet partií v DB. Pro empty-state UI na /games."""
     return {"count": count_games()}
+
+
+@app.get("/api/games/accounts")
+def api_games_accounts() -> list[dict]:
+    """Vrátí distinct (source, username) páry s počtem partií pro filter dropdown.
+
+    Pro frontend `/games`: pokud `len > 1`, ukáže se dropdown 'Účet'; pro 1 account
+    se skryje (zbytečný UI šum). Schema: ``[{"source": ..., "username": ..., "count": N}]``.
+    """
+    return list_distinct_accounts()
 
 
 @app.get("/api/games/{game_id}/pgn")
