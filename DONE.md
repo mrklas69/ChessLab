@@ -2,6 +2,21 @@
 
 Hotové úkoly. Nejnovější nahoře.
 
+## 2026-05-17 — Engine v2.6: Quiescence search + root search fix
+
+- **`_quiescence(board, alpha, beta, ply=0) -> int`** v `minimax_engine.py` — captures-only quiescence search v listech minimax stromu. Stand-pat pattern (eval pozice je lower bound, hráč nemusí captureovat), beta cutoff už na stand-pat, in-check větev iteruje **všechny** legal moves (escape from check) místo jen captures (jinak by engine "stál na místě" v šachu = nelegální). Hard depth cap `_QUIESCENCE_MAX_PLIES = 8` (Stockfish ~6) — bez něj může quiescence v multi-capture exchange sequences přetéct UCI movetime budget (0.05s v Aréně) → arena timeout, partie ztracena. Při dosažení capu vrátíme stand_pat (resp. -MATE pokud in_check, defenzivní fallback).
+- **Integrace v `_negamax`** — terminál rozdělen: `is_game_over` → přímý `_evaluate_for_side_to_move`, `depth == 0` → `_quiescence`. Důvod: po game_over captures nejsou (pozice definitivně skončena), kdežto na depth=0 chceme extend search v capture pozici.
+- **Root search bug fix** v `choose_move` (existoval od v2.0): původní kód sdílel `alpha` mezi top-level iteracemi → standardní alpha-beta pruning pattern. Problém: druhý+ tah dostane jen *upper bound* score z alpha-beta cutoffu (víme jen "≤ alpha", ne přesnou hodnotu). Tie-break přes porovnání skóre pak falešně rozšiřoval `best_moves` set — např. in-check pozici (Kxe2 score 0, Kf1 cutoff score 0) `random.choice` mohl vybrat Kf1 místo Kxe2 (volná věž neuznána). Fix: každý root move searchuje s freshly (-inf, +inf) oknem; cena = top-level pruning ztracen (pruning v child zůstává), pro depth 2 zanedbatelné. Standardní PVS (Principal Variation Search s re-search cutoff tahů) by řešilo bez ztráty pruningu, ale je v2.7+ optimalizace.
+- **Unit test in-check pozice** (`4k3/8/8/8/8/8/4r3/4K3 w - - 0 1` = WK e1, BR e2, BK e8): před fixem engine vracel Kf1 (random tie-break z falešného setu), po fixu vrací deterministicky Kxe2 (capture věže = exact score 0, ostatní tahy -500).
+- **Verze bump**: `v2.5` → `v2.6`. Display name v `_KNOWN_ENGINES` + `ENGINE_NAME`. Console script `chesslab-minimax` (in-place upgrade — historický v2.5 baseline je v gitu commit `b9988e1` před tímto).
+- **Smoke test Aréna** (Minimax v2.6 vs Greedy v1, 20 partií, 0.1s/tah, alternace barev):
+  - **20W-0L-0D, 100 %, perf rating ≥ +636.4 Elo** (lower bound — sweep). Proti v2.5 (+511 exact): **skok +120 Elo** quiescence + root fix dohromady.
+  - **100 % CHECKMATE** termination (vs v2.5: 18× CHECKMATE + 2× draw). Greedy už nemá únikové cesty — quiescence chytá taktiky v listech, kde Greedy v2.5 občas projel.
+  - Avg plies 76 (= ~38 tahů), range 27-156. Rychlé matty v openingu (Greedy padne na 4-ply taktiku), dlouhé v koncovkách (endgame heuristika z v2.5 dotáhne KR-vs-K).
+  - **Ověření 0.05s/tah** (default arena slider): 5/5 sweep za 32s, žádný timeout. Quiescence cap funguje — typický průměr 3-5 plies, depth 8 se aktivuje extrémně zřídka.
+- **Vědomě vyloučeno z v2.6** (zaznamenáno IDEAS): checks v quiescence (search explosion bez SEE-filtering, plánováno v2.8), MVV-LVA move ordering (v2.7, zlepší pruning v negamax i quiescence), SEE pruning špatných captures (Q×P chráněný P), iterative deepening + TT, PVS re-search v root pro top-level pruning.
+- **Otevřená otázka**: přesný breakdown přínosu (kolik z +120 Elo je quiescence vs root fix) — pro izolaci by chtělo revert na v2.5 + samostatný root fix test + arena run. Drobnost; net effect je čistý win.
+
 ## 2026-05-17 — Lichess import + SQLite + browser partií (`/import`, `/games`)
 
 - **SQLite vrstva** `src/chesslab/db.py` — connection context manager (auto commit/rollback, `row_factory=Row`), schema přes `executescript(_SCHEMA)` s `IF NOT EXISTS` všude (idempotentní, žádné migrace). Single source of truth pro DB cestu: default `<project>/data/chesslab.db`, override `CHESSLAB_DB_PATH`. `init_db()` se volá z FastAPI **lifespan** hooku — první start aplikace vytvoří `data/` adresář + tabulky automaticky. Schema: jedna tabulka `games` s 18 sloupci (id PRIMARY KEY pro UPSERT, plný PGN jako TEXT, indexy na username/created_at/source).

@@ -29,7 +29,7 @@ from chesslab.engine import _stockfish_path
 _KNOWN_ENGINES: dict[str, tuple[str, bool]] = {
     "chesslab-random": ("ChessLab Random v0", False),
     "chesslab-greedy": ("ChessLab Greedy v1", False),
-    "chesslab-minimax": ("ChessLab Minimax v2.5", False),
+    "chesslab-minimax": ("ChessLab Minimax v2.6", False),
 }
 
 
