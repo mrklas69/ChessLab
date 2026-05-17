@@ -50,15 +50,26 @@ Pro sparring oba enginy zároveň. Snapshot v2.7 zamražený jako `minimax_engin
 - `choose_move()` na initial position vrací legální tah (`a2a4`).
 - Terminal pozice (Scholar's mate FEN) detekována jako `is_checkmate=True`.
 
-### Sparring (20 partií, time_per_move=0.05s, alternují barvy)
-- **v2.8: 15 výher**, v2.7: 4 výhry, 1 remíza.
-- Score 77.5 % → best estimate **+215 Elo** nad v2.7.
-- 95 % CI cca [+65, +630] Elo — 20 partií je spodní hranice spolehlivosti, ale signál jasně pozitivní.
+### Sparring — síla nejistá (2 protichůdné runy)
+
+| # | Time/tah | v2.8 výher | v2.7 výher | Remíz | v2.8 score | Best Elo | 95 % CI Elo |
+|---|---|---|---|---|---|---|---|
+| 1 | 0.05s | 15 | 4 | 1 | 77.5 % | +215 | [+65, +630] |
+| 2 | ~0.15s | 9 | 10 | 1 | 47.5 % | −18 | [−195, +135] |
+
+CI se **překrývají kolem 50 %**, výsledky statisticky **nerozlišitelné**. 20 partií má SE ±22 % score — sotva signál.
+
+**Plausibilní interpretace** (nepotvrzeno):
+- v2.8 má výhodu jen na **krátkém time budgetu** (0.05s/tah). Při delším čase main search jde stejně hloub i bez quiescence checks, naopak checks ujídají čas, který by šel jinde. Stockfish historický trend.
+- Alternativa: první sparring byl lucky streak, skutečná síla v2.8 ≈ v2.7.
+
+**Decisive test** by chtěl 100+ partií se SPRT (Sequential Probability Ratio Test) nebo Bayes update. Nedělali jsme — KISS, beztak chceme dál stavět (v2.9 SEE filter, v3 depth 3+ID).
 
 ### Pozn.
-- Sparring přes `POST /api/arena/run` (synchronní, ~2 min pro 20 partií × 0.05s).
+- Sparring přes `POST /api/arena/run` (synchronní, ~2 min @ 0.05s / ~6 min @ 0.15s pro 20 partií).
 - Path k binárkám: `.venv/Scripts/chesslab-minimax{,-v27}.exe`.
 - Při budoucích verzích (v2.9, v3, …) analogický snapshot pattern: `minimax_engine_v28.py` + `chesslab-minimax-v28` entry point.
+- **Poučení**: 20 partií ≠ decisive engine test. Příště plán 100+ partií, nebo SPRT se stop condition.
 
 ---
 
