@@ -2,6 +2,13 @@
 
 Hotové úkoly. Nejnovější nahoře.
 
+## 2026-05-17 — Stockfish analýza: vizuální komponenty
+
+- **Eval bar** — svislý 24×420 px sloupec vlevo od šachovnice. Lineární škála ±1000 cp → 0–100 % bílé, mate = plný extrém. Číselný popisek uvnitř (`+1.5` / `-M3`), barva textu podle převahy. Smooth `transition: height 0.25s`.
+- **Best move šipka** — SVG overlay nad boardem, `<line>` + marker (lichess-zelená `#15781B`, opacity 0.7). Souřadnice čtené z `getBoundingClientRect()` reálných `.square-XX` elementů (chessboard.js má 2px border → konstantní vzorec by šipku posunul).
+- **Auto-trigger** — checkbox „Auto" vedle tlačítka analýzy. Při zapnutí spustí analýzu, `setPly()` ji opakuje při každé změně pozice. **AbortController** ruší rozjetý fetch při rychlém proklikávání → UI nebliká starou odpovědí. Backendový Stockfish dojede do konce sám (persistent engine vyřešíme až bude potřeba).
+- README aktualizován o nové features.
+
 ## 2026-05-17 — PGN viewer + Stockfish analýza (textový výpis)
 
 - **PGN viewer end-to-end** (TODO → DONE):
