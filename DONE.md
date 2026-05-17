@@ -2,6 +2,14 @@
 
 Hotové úkoly. Nejnovější nahoře.
 
+## 2026-05-17 — Engine arena (`/arena`)
+
+- **Backend** `src/chesslab/arena.py` (nový modul) — `EngineConfig` (path + skill), `ArenaConfig` (engine A, B, n_games 1-20, time_per_move 0.05-2.0), `GameResult` per partie (white_name, white_is `'a'`/`'b'`, result, termination, plies, full PGN se Seven Tag Roster), `ArenaResult` (agregát W/L/D, score, score %, perf_rating_diff). `run_arena()` drží persistentní enginy přes celý batch (try/finally pro cleanup), alternuje barvy (sudé partie A=bílý, liché B=bílý), `Skill Level` aplikuje jen pokud engine UCI option má (`engine.options` check — custom engine bez Skill Level přežije). Safety net `MAX_PLIES_PER_GAME = 600` proti zacyklené koncovce. Perf rating: `-400 × log10(1/score_rate - 1)`, vrací `None` pro 0%/100% skóre (logaritmus by dělil 0).
+- **Endpoint** `POST /api/arena/run` — vstup `ArenaConfig`, výstup `ArenaResult`. Pydantic validace drží limity (n_games 1-20, time 0.05-2.0s, skill 0-20). FileNotFoundError → 500 (chybějící binárka). Sériový batch — pro 20 partií × ~3s = ~60s blokujícího requestu.
+- **Frontend** `templates/arena.html` — dva engine boxy (path text + skill slider 0-20), pak N partií + čas/tah slidery. Run button + status řádek s fake progress (`Hraju… 4.2s / ~18s`). Po dokončení agregátový panel (score line A vs B, W/L/D, perf rating diff, čas/partie) + tabulka partií (color-coded result podle a/b, termination, plies, per-game PGN download přes Blob — žádný server-side state).
+- **Index** updated — Engine arena přesunuta z „Brzy přijde" do Features. README touchnut nebyl (zaktualizuje se s další iterací).
+- **Vědomě vyloučeno z MVP**: live board během běhu (SSE/polling), background tasks pro 100+ partií, custom UCI options kromě Skill Level, `ucinewgame` mezi partiemi (python-chess SimpleEngine to public API nevystavuje — engine si nese hash z předchozí hry). Sezení odhalilo drobné UI nálezy → viz TODO „Engine arena — polish".
+
 ## 2026-05-17 — Hraní proti Stockfish (`/play`)
 
 - **Backend** `src/chesslab/play.py` (nový modul) — `GameState` dataclass (board + persistent Stockfish + player_color + skill + think_time + resigned + Lock), modulový singleton, akce `start_game()` / `apply_player_move()` / `undo_last_move()` / `resign_game()` / `get_pgn_download()`. Persistent engine přes celou hru (spawn-per-tah = 100-200ms lag), `engine.configure({"Skill Level": N})`. Auto-promote na dámu (UCI fallback `+ 'q'`). PGN se Seven Tag Roster pro download.

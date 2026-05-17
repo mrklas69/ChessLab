@@ -10,7 +10,28 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 from chesslab import __version__
-from chesslab.engine import EngineAnalysis, PositionEval, analyse_fen, analyse_game_fens
+from chesslab.arena import (
+    N_GAMES_DEFAULT,
+    N_GAMES_MAX,
+    N_GAMES_MIN,
+    SKILL_DEFAULT_A,
+    SKILL_DEFAULT_B,
+    TIME_DEFAULT,
+    TIME_MAX,
+    TIME_MIN,
+    ArenaConfig,
+    ArenaResult,
+    run_arena,
+)
+from chesslab.arena import SKILL_MAX as ARENA_SKILL_MAX
+from chesslab.arena import SKILL_MIN as ARENA_SKILL_MIN
+from chesslab.engine import (
+    DEFAULT_STOCKFISH_PATH,
+    EngineAnalysis,
+    PositionEval,
+    analyse_fen,
+    analyse_game_fens,
+)
 from chesslab.pgn import PgnGame, parse_pgn
 from chesslab.play import (
     SKILL_DEFAULT,
@@ -51,6 +72,29 @@ def index(request: Request) -> HTMLResponse:
 def pgn_viewer(request: Request) -> HTMLResponse:
     """PGN viewer — šachovnice + textarea + move list (zatím bez JS glue)."""
     return templates.TemplateResponse(request=request, name="pgn.html")
+
+
+@app.get("/arena", response_class=HTMLResponse)
+def arena_page(request: Request) -> HTMLResponse:
+    """Engine arena — dva UCI enginy proti sobě, batch X partií."""
+    return templates.TemplateResponse(
+        request=request,
+        name="arena.html",
+        context={
+            # Defaults a limity pro inputy — single source of truth z arena.py.
+            "default_stockfish_path": DEFAULT_STOCKFISH_PATH,
+            "skill_min": ARENA_SKILL_MIN,
+            "skill_max": ARENA_SKILL_MAX,
+            "skill_default_a": SKILL_DEFAULT_A,
+            "skill_default_b": SKILL_DEFAULT_B,
+            "time_min": TIME_MIN,
+            "time_max": TIME_MAX,
+            "time_default": TIME_DEFAULT,
+            "n_games_min": N_GAMES_MIN,
+            "n_games_max": N_GAMES_MAX,
+            "n_games_default": N_GAMES_DEFAULT,
+        },
+    )
 
 
 @app.get("/play", response_class=HTMLResponse)
@@ -296,3 +340,24 @@ def api_play_pgn() -> Response:
         media_type="application/x-chess-pgn; charset=utf-8",
         headers={"Content-Disposition": 'attachment; filename="game.pgn"'},
     )
+
+
+# === Arena API ===============================================================
+
+
+@app.post("/api/arena/run", response_model=ArenaResult)
+def api_arena_run(req: ArenaConfig) -> ArenaResult:
+    """Spustí arenu — odehraje N partií enginy A vs B (alternuje barvy), vrátí výsledky.
+
+    Synchronní batch — pro N=20 × ~3s = ~60s blokuje request. Vyšší N nebo delší
+    time_per_move riskují timeout, validace v Pydantic to drží v rozumných mezích.
+    """
+    try:
+        return run_arena(req)
+    except FileNotFoundError as exc:
+        # Engine binárka neexistuje — server-side config problem (cesta dodaná klientem,
+        # ale i tak 500 — chybí lokální resource, není to syntax error v requestu).
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except Exception as exc:
+        # python-chess engine errors (EngineTerminatedError, EngineError, ...) — 500.
+        raise HTTPException(status_code=500, detail=f"Engine chyba: {exc}") from exc

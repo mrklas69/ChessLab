@@ -5,9 +5,11 @@ Raw nápady / vize / nice-to-have. Z těchto vznikají úkoly do `TODO.md`, **ne
 ## Engine
 
 - **Vlastní šachový engine v Pythonu** — minimax + alpha-beta, evaluation function, postupné iterativní zlepšování. Cílem je experimentování / učení, ne konkurovat Stockfishi.
-- **Engine sparring** — turnaj N enginů, round-robin, ELO výpočet (Bayesian / linear regression).
+- **Engine sparring** — turnaj N enginů, round-robin, ELO výpočet (Bayesian / linear regression). (Areny 1v1 hotové, turnaj = další krok.)
 - **Opening book** — DB otevírkové teorie (.bin Polyglot, nebo vlastní z partií).
 - **NNUE eval** v Python implementaci (velmi ambiciózní, jen pokud Python výkon nebude blokátor).
+- **Arena: defaultní vyrovnaný matchup** — místo skill 5 vs 15 (vždy 0%/100%, perf rating N/A) zvážit default např. 5 vs 8 (vyrovnanější, perf rating dá smysl už od první spuštění). Diskuse: demonstrace převahy vs. užitečnost metriky.
+- **Arena: live progress** — místo fake odhadu času streamovat per-game výsledky přes SSE. Pro N > 10 by user získal feedback dřív než po 60s.
 
 ## Analýza
 

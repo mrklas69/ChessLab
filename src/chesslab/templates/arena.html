@@ -1,0 +1,371 @@
+{# Engine arena — dva UCI enginy proti sobě, batch X partií.
+   Formulář + Run + výsledkový panel + tabulka partií s per-game PGN download. #}
+{% extends "base.html" %}
+
+{% block title %}Engine arena · ChessLab{% endblock %}
+
+{% block style %}
+/* === Formulář ============================================================ */
+.config {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    margin-bottom: 20px;
+}
+.engine-box {
+    background: #f4f1e8;
+    border: 1px solid #d4c8a8;
+    border-radius: 4px;
+    padding: 14px 16px;
+}
+.engine-box h3 {
+    margin: 0 0 10px;
+    font-size: 1em;
+    color: #5a3a1a;
+}
+.field {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 8px 0;
+    font-size: 0.92em;
+}
+.field label {
+    flex: 0 0 90px;
+    color: #555;
+}
+.field input[type="text"] {
+    flex: 1;
+    padding: 4px 8px;
+    font-family: monospace;
+    font-size: 0.85em;
+    border: 1px solid #c0b890;
+    border-radius: 3px;
+    background: #fff;
+    min-width: 0;
+}
+.field input[type="range"] {
+    flex: 1;
+}
+.field .value-label {
+    flex: 0 0 50px;
+    text-align: right;
+    font-weight: bold;
+    color: #1a1a1a;
+    font-variant-numeric: tabular-nums;
+}
+.global-controls {
+    display: flex;
+    gap: 24px;
+    align-items: center;
+    margin: 14px 0;
+}
+.global-controls .field {
+    flex: 1;
+    margin: 0;
+}
+.run-row {
+    display: flex;
+    gap: 14px;
+    align-items: center;
+    margin-top: 14px;
+}
+button.primary {
+    padding: 8px 20px;
+    font-size: 1em;
+    background: #5a3a1a;
+    color: #fff;
+    border: none;
+    border-radius: 3px;
+    cursor: pointer;
+    font-family: inherit;
+}
+button.primary:hover:not(:disabled) { background: #3a2410; }
+button.primary:disabled { background: #aaa; cursor: not-allowed; }
+.status {
+    color: #555;
+    font-size: 0.92em;
+    font-variant-numeric: tabular-nums;
+}
+.status.error { color: #b22222; }
+
+/* === Výsledkový panel ===================================================== */
+.results { margin-top: 30px; }
+.aggregate {
+    background: #f4f1e8;
+    border-left: 4px solid #5a3a1a;
+    padding: 14px 18px;
+    margin-bottom: 16px;
+}
+.aggregate .score-line {
+    font-size: 1.4em;
+    font-weight: bold;
+    color: #1a1a1a;
+    margin-bottom: 6px;
+}
+.aggregate .meta-line {
+    font-size: 0.92em;
+    color: #555;
+}
+.aggregate .a-label { color: #1a4a8a; }
+.aggregate .b-label { color: #8a3a1a; }
+
+table.games {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9em;
+    margin-top: 10px;
+}
+table.games th, table.games td {
+    text-align: left;
+    padding: 6px 10px;
+    border-bottom: 1px solid #e0d8b8;
+}
+table.games th {
+    background: #ece4c8;
+    font-weight: normal;
+    color: #5a3a1a;
+}
+table.games td.center { text-align: center; }
+table.games td.result { font-weight: bold; font-variant-numeric: tabular-nums; }
+table.games td.result.win-a { color: #1a4a8a; }
+table.games td.result.win-b { color: #8a3a1a; }
+table.games td.result.draw { color: #555; }
+table.games td.term { font-size: 0.82em; color: #777; }
+table.games a.dl { color: #5a3a1a; text-decoration: none; }
+table.games a.dl:hover { text-decoration: underline; }
+
+.empty {
+    color: #888;
+    font-style: italic;
+    margin-top: 30px;
+}
+{% endblock %}
+
+{% block content %}
+<h1>Engine arena</h1>
+<p>Dva UCI enginy proti sobě, sériový batch. Barvy se alternují (sudé partie A=bílý, liché B=bílý).
+   Výsledky jako score % a performance rating diff (pro N=10-20 partií dává přesnější obraz než Elo).</p>
+
+<div class="config">
+    <div class="engine-box">
+        <h3>Engine A</h3>
+        <div class="field">
+            <label for="path-a">Path:</label>
+            <input type="text" id="path-a" value="{{ default_stockfish_path }}">
+        </div>
+        <div class="field">
+            <label for="skill-a">Skill:</label>
+            <input type="range" id="skill-a" min="{{ skill_min }}" max="{{ skill_max }}" step="1" value="{{ skill_default_a }}">
+            <span class="value-label" id="skill-a-val">{{ skill_default_a }}</span>
+        </div>
+    </div>
+
+    <div class="engine-box">
+        <h3>Engine B</h3>
+        <div class="field">
+            <label for="path-b">Path:</label>
+            <input type="text" id="path-b" value="{{ default_stockfish_path }}">
+        </div>
+        <div class="field">
+            <label for="skill-b">Skill:</label>
+            <input type="range" id="skill-b" min="{{ skill_min }}" max="{{ skill_max }}" step="1" value="{{ skill_default_b }}">
+            <span class="value-label" id="skill-b-val">{{ skill_default_b }}</span>
+        </div>
+    </div>
+</div>
+
+<div class="global-controls">
+    <div class="field">
+        <label for="n-games">N partií:</label>
+        <input type="range" id="n-games" min="{{ n_games_min }}" max="{{ n_games_max }}" step="1" value="{{ n_games_default }}">
+        <span class="value-label" id="n-games-val">{{ n_games_default }}</span>
+    </div>
+    <div class="field">
+        <label for="time-per-move">Čas/tah:</label>
+        <input type="range" id="time-per-move" min="{{ time_min }}" max="{{ time_max }}" step="0.05" value="{{ time_default }}">
+        <span class="value-label" id="time-per-move-val">{{ "%.2f"|format(time_default) }}s</span>
+    </div>
+</div>
+
+<div class="run-row">
+    <button class="primary" id="run-btn">Spustit arenu</button>
+    <span class="status" id="status">Připraveno.</span>
+</div>
+
+<div class="results" id="results" style="display: none;">
+    <div class="aggregate" id="aggregate"></div>
+    <table class="games">
+        <thead>
+            <tr>
+                <th class="center">#</th>
+                <th>Bílý</th>
+                <th>Černý</th>
+                <th class="center">Výsledek</th>
+                <th class="center">Tahy</th>
+                <th>Konec</th>
+                <th class="center">PGN</th>
+            </tr>
+        </thead>
+        <tbody id="games-tbody"></tbody>
+    </table>
+</div>
+{% endblock %}
+
+{% block script %}
+<script>
+// === DOM helpery =============================================================
+const $ = (id) => document.getElementById(id);
+
+// === Live label update pro slidery ==========================================
+// Stejný pattern jako /play — slider hodnota se zobrazuje vpravo, updatuje se "input" eventem.
+function bindSlider(sliderId, labelId, formatter) {
+    const slider = $(sliderId);
+    const label = $(labelId);
+    const update = () => { label.textContent = formatter(slider.value); };
+    slider.addEventListener('input', update);
+    update();
+}
+bindSlider('skill-a', 'skill-a-val', v => v);
+bindSlider('skill-b', 'skill-b-val', v => v);
+bindSlider('n-games', 'n-games-val', v => v);
+bindSlider('time-per-move', 'time-per-move-val', v => Number(v).toFixed(2) + 's');
+
+// === Helper: sestavit ArenaConfig z formuláře ===============================
+function readConfig() {
+    return {
+        engine_a: {
+            path: $('path-a').value,
+            skill: parseInt($('skill-a').value, 10),
+        },
+        engine_b: {
+            path: $('path-b').value,
+            skill: parseInt($('skill-b').value, 10),
+        },
+        n_games: parseInt($('n-games').value, 10),
+        time_per_move: parseFloat($('time-per-move').value),
+    };
+}
+
+// === Helper: PGN download přes Blob =========================================
+// Žádný server-side state — PGN jsme dostali v JSON odpovědi, klient si ho
+// stáhne jako Blob (URL.createObjectURL + click na <a download>).
+function downloadPgn(pgnText, filename) {
+    const blob = new Blob([pgnText], { type: 'application/x-chess-pgn' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    // Uvolnit objectURL — jinak memory leak (browser drží referenci).
+    setTimeout(() => URL.revokeObjectURL(url), 100);
+}
+
+// === Render výsledků =========================================================
+function renderResults(result) {
+    const agg = $('aggregate');
+    const scoreA = result.score_a.toFixed(1);
+    const scoreB = (result.n_games - result.score_a).toFixed(1);
+    // Perf rating: může být null (100% nebo 0% score → log10 by dělil 0).
+    const perfText = result.perf_rating_diff === null
+        ? 'perf rating: N/A (extrémní výsledek)'
+        : `perf rating diff: ${result.perf_rating_diff >= 0 ? '+' : ''}${result.perf_rating_diff} Elo`;
+
+    agg.innerHTML = `
+        <div class="score-line">
+            <span class="a-label">${result.engine_a_name}</span>
+            ${scoreA} − ${scoreB}
+            <span class="b-label">${result.engine_b_name}</span>
+        </div>
+        <div class="meta-line">
+            Skóre A: <strong>${result.score_pct_a}%</strong> ·
+            W/L/D: ${result.a_wins} / ${result.b_wins} / ${result.draws} ·
+            ${perfText} ·
+            čas: ${result.total_time}s (${(result.total_time / result.n_games).toFixed(1)}s/partie)
+        </div>
+    `;
+
+    // Tabulka partií. Per-game PGN download generujeme přes Blob (helper).
+    const tbody = $('games-tbody');
+    tbody.innerHTML = '';
+    result.games.forEach(g => {
+        const tr = document.createElement('tr');
+        // Třída pro výsledek: kdo vyhrál → kdo je 'a' nebo 'b'?
+        let resultClass = 'draw';
+        if (g.result === '1-0') resultClass = g.white_is === 'a' ? 'win-a' : 'win-b';
+        else if (g.result === '0-1') resultClass = g.white_is === 'a' ? 'win-b' : 'win-a';
+
+        tr.innerHTML = `
+            <td class="center">${g.game_index + 1}</td>
+            <td>${g.white_is === 'a' ? 'A' : 'B'}: ${g.white_name}</td>
+            <td>${g.white_is === 'a' ? 'B' : 'A'}: ${g.black_name}</td>
+            <td class="center result ${resultClass}">${g.result}</td>
+            <td class="center">${g.plies}</td>
+            <td class="term">${g.termination}</td>
+            <td class="center"><a href="#" class="dl" data-idx="${g.game_index}">stáhnout</a></td>
+        `;
+        tbody.appendChild(tr);
+    });
+
+    // Event delegation pro PGN download (jeden listener pro celou tabulku).
+    tbody.querySelectorAll('a.dl').forEach(a => {
+        a.addEventListener('click', (e) => {
+            e.preventDefault();
+            const idx = parseInt(a.dataset.idx, 10);
+            const game = result.games[idx];
+            downloadPgn(game.pgn, `arena_game_${idx + 1}.pgn`);
+        });
+    });
+
+    $('results').style.display = 'block';
+}
+
+// === Run handler =============================================================
+const runBtn = $('run-btn');
+const statusEl = $('status');
+
+runBtn.addEventListener('click', async () => {
+    const config = readConfig();
+    runBtn.disabled = true;
+    statusEl.classList.remove('error');
+    statusEl.textContent = `Spouštím arenu (${config.n_games} partií, ~${(config.n_games * 30 * config.time_per_move).toFixed(0)}s)…`;
+
+    // Fake progress timer — backend nemá streaming, klient odhaduje podle
+    // n_games × avg moves × time_per_move. Pro 6 × 30 × 0.1 ≈ 18s.
+    const startedAt = performance.now();
+    const estimatedTotal = config.n_games * 30 * config.time_per_move;
+    const tick = setInterval(() => {
+        const elapsed = (performance.now() - startedAt) / 1000;
+        statusEl.textContent = `Hraju… ${elapsed.toFixed(1)}s / ~${estimatedTotal.toFixed(0)}s`;
+    }, 200);
+
+    try {
+        const resp = await fetch('/api/arena/run', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(config),
+        });
+        clearInterval(tick);
+
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+            statusEl.textContent = `Chyba: ${err.detail || resp.statusText}`;
+            statusEl.classList.add('error');
+            return;
+        }
+
+        const result = await resp.json();
+        statusEl.textContent = `Hotovo: ${result.n_games} partií za ${result.total_time}s.`;
+        renderResults(result);
+    } catch (e) {
+        clearInterval(tick);
+        statusEl.textContent = `Síťová chyba: ${e.message}`;
+        statusEl.classList.add('error');
+    } finally {
+        runBtn.disabled = false;
+    }
+});
+</script>
+{% endblock %}
