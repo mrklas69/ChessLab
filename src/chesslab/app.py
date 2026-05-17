@@ -8,7 +8,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 from chesslab import __version__
-from chesslab.engine import EngineAnalysis, analyse_fen
+from chesslab.engine import EngineAnalysis, PositionEval, analyse_fen, analyse_game_fens
 from chesslab.pgn import PgnGame, parse_pgn
 
 # FastAPI instance — to je hlavní objekt, který uvicorn umí spustit.
@@ -100,3 +100,52 @@ def api_engine_analyse(req: EngineAnalyseRequest) -> EngineAnalysis:
     except ValueError as exc:
         # 400 = klient poslal špatný FEN nebo koncovou pozici.
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+class EngineAnalyseGameRequest(BaseModel):
+    """Vstupní payload pro /api/engine/analyse_game — list FEN pozic celé partie."""
+
+    fens: list[str] = Field(
+        ...,
+        description="Seznam FEN pozic v pořadí (typicky startpos + pozice po každém půltahu).",
+        min_length=1,
+        max_length=400,  # hard cap proti zabití serveru dlouhou partií (400 půltahů = 200 tahů)
+    )
+    time_per_move: float = Field(
+        0.3,
+        description="Budget na pozici v sekundách (0.05–2.0).",
+        ge=0.05,
+        le=2.0,
+    )
+
+
+class EngineAnalyseGameResponse(BaseModel):
+    """Výstup /api/engine/analyse_game — list eval per pozici + metadata."""
+
+    evals: list[PositionEval]
+    time_per_move: float = Field(..., description="Použitý budget per pozici (echo z requestu).")
+    total_time: float = Field(..., description="Skutečný wall-clock čas celé analýzy v sekundách.")
+
+
+@app.post("/api/engine/analyse_game", response_model=EngineAnalyseGameResponse)
+def api_engine_analyse_game(req: EngineAnalyseGameRequest) -> EngineAnalyseGameResponse:
+    """Zanalyzuje sérii pozic jedním persistentním Stockfishem (rychlejší než spawn-per).
+
+    Synchronní endpoint — pro 80 pozic × 0.3s = ~24s wait. Streaming přidáme,
+    pokud se ukáže jako UX problém (zatím KISS).
+    """
+    import time as _time
+
+    started = _time.monotonic()
+    try:
+        evals = analyse_game_fens(req.fens, req.time_per_move)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return EngineAnalyseGameResponse(
+        evals=evals,
+        time_per_move=req.time_per_move,
+        total_time=_time.monotonic() - started,
+    )

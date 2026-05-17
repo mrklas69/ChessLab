@@ -184,6 +184,36 @@ button:disabled, button:disabled:hover {
     user-select: none;
 }
 .auto-toggle input { cursor: pointer; margin: 0; }
+/* === Eval graph (pod layoutem, full-width) === */
+.eval-graph-container {
+    margin-top: 24px;
+    padding: 12px;
+    border: 1px solid #ddd;
+    background: #fafaf6;
+    border-radius: 4px;
+}
+.eval-graph-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 10px;
+}
+.eval-graph-header button { margin: 0; }
+.eval-graph-status {
+    font-size: 0.85em;
+    color: #888;
+    font-family: 'Consolas', 'Courier New', monospace;
+}
+.eval-graph-svg {
+    display: block;
+    width: 100%;
+    height: 140px;
+    background: #fff;
+    border: 1px solid #eee;
+    border-radius: 3px;
+}
+.eval-graph-svg .graph-dot { cursor: pointer; }
+.eval-graph-svg .graph-dot:hover { r: 5; }
 {% endblock %}
 
 {% block content %}
@@ -246,6 +276,15 @@ button:disabled, button:disabled:hover {
         </div>
     </div>
 </div>
+
+{# Eval graf přes celou partii — pod layoutem, full-width. #}
+<div class="eval-graph-container">
+    <div class="eval-graph-header">
+        <button id="analyse-game-btn" disabled>Analyzovat partii (0.3s/tah)</button>
+        <span class="eval-graph-status" id="analyse-game-status">(nejdřív načti partii)</span>
+    </div>
+    <svg class="eval-graph-svg" id="eval-graph-svg"></svg>
+</div>
 {% endblock %}
 
 {% block script %}
@@ -271,6 +310,8 @@ button:disabled, button:disabled:hover {
         ply: 0,
         autoAnalyse: false,
         analysisAbort: null,
+        // Výsledek /api/engine/analyse_game — {evals, time_per_move, total_time} nebo null.
+        gameEvals: null,
     };
 
     // === DOM reference ======================================================
@@ -285,6 +326,9 @@ button:disabled, button:disabled:hover {
     const $evalBarWhite = document.getElementById('eval-bar-white');
     const $evalBarText = document.getElementById('eval-bar-text');
     const $arrow = document.getElementById('best-move-arrow');
+    const $analyseGameBtn = document.getElementById('analyse-game-btn');
+    const $analyseGameStatus = document.getElementById('analyse-game-status');
+    const $evalGraphSvg = document.getElementById('eval-graph-svg');
 
     // === Načtení PGN ze serveru =============================================
     async function loadPGN() {
@@ -322,7 +366,9 @@ button:disabled, button:disabled:hover {
             // Po načtení partie povolíme analýzu a vyresetujeme výpis.
             $analyseBtn.disabled = false;
             $autoToggle.disabled = false;
+            $analyseGameBtn.disabled = false;
             clearAnalysis();
+            clearGraph();
             // Auto-režim: pokud je zaškrtnutý už při loadu, hned analyzuj výchozí pozici.
             if (state.autoAnalyse) analyse();
             // Sundáme focus z textarea, ať klávesy ←/→ fungují hned.
@@ -341,6 +387,8 @@ button:disabled, button:disabled:hover {
         updateActiveMove();
         // Nová pozice → starý eval už nesedí, smaž ho.
         clearAnalysis();
+        // Cursor v grafu sleduje aktuální ply (pokud existuje rendered graf).
+        updateGraphCursor();
         // Auto-režim: hned spusť analýzu nové pozice (běží na pozadí, šipkám nebrání).
         if (state.autoAnalyse) analyse();
     }
@@ -493,6 +541,199 @@ button:disabled, button:disabled:hover {
         return (v >= 0 ? '+' : '') + v.toFixed(1);
     }
 
+    // === Eval graf přes celou partii ========================================
+
+    // Konstanty grafu — výška SVG, padding pro hezké orámování křivky.
+    const GRAPH_H = 140;
+    const GRAPH_PAD_X = 6;
+    const GRAPH_PAD_Y = 8;
+    // Konstanty eval škály — clamp ±1000 cp (izomorfně s eval barem).
+    const GRAPH_CP_CLAMP = 1000;
+    // Blunder threshold — drop > 150 cp z pohledu hráče, který tahnul.
+    const BLUNDER_CP = 150;
+
+    // Převede eval (cp nebo mate) na clamped centipawn pro účely grafu/blunder detekce.
+    // Mate vždy = ±GRAPH_CP_CLAMP (full extrém), izomorfně s eval barem.
+    function evalToClampedCp(scoreCp, mateIn) {
+        if (mateIn !== null && mateIn !== undefined) {
+            return mateIn > 0 ? GRAPH_CP_CLAMP : -GRAPH_CP_CLAMP;
+        }
+        if (scoreCp === null || scoreCp === undefined) return 0;
+        return Math.max(-GRAPH_CP_CLAMP, Math.min(GRAPH_CP_CLAMP, scoreCp));
+    }
+
+    async function analyseGame() {
+        if (!state.game) return;
+
+        // FENs = startpos + pozice po každém půltahu (matchuje ply 0..N indexaci).
+        const fens = [state.game.starting_fen, ...state.game.moves.map(m => m.fen_after)];
+
+        $analyseGameBtn.disabled = true;
+        const startedAt = Date.now();
+        // Backend nemá streaming, takže odhadujeme čas elapsed/expected (fake progress).
+        const expectedTotal = fens.length * 0.3;
+        const tick = setInterval(() => {
+            const elapsed = (Date.now() - startedAt) / 1000;
+            $analyseGameStatus.textContent =
+                'Analyzuji… ' + elapsed.toFixed(1) + 's / ~' + expectedTotal.toFixed(0) + 's';
+        }, 200);
+
+        try {
+            const resp = await fetch('/api/engine/analyse_game', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({fens, time_per_move: 0.3}),
+            });
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                const msg = typeof err.detail === 'string' ? err.detail : 'Chyba ' + resp.status;
+                $analyseGameStatus.textContent = 'Chyba: ' + msg;
+                return;
+            }
+            const data = await resp.json();
+            state.gameEvals = data;
+            $analyseGameStatus.textContent =
+                'Hotovo (' + data.total_time.toFixed(1) + 's, ' + data.evals.length + ' pozic)';
+            renderGraph();
+        } catch (e) {
+            $analyseGameStatus.textContent = 'Chyba: ' + e.message;
+        } finally {
+            clearInterval(tick);
+            $analyseGameBtn.disabled = false;
+        }
+    }
+
+    // Vykreslí SVG graf z state.gameEvals. Volá se po analýze a po resize okna.
+    function renderGraph() {
+        if (!state.gameEvals) {
+            $evalGraphSvg.innerHTML = '';
+            return;
+        }
+        const evals = state.gameEvals.evals;
+        // clientWidth čteme až tady — DOM už je layoutovaný, máme reálnou šířku.
+        const W = $evalGraphSvg.clientWidth || 720;
+        $evalGraphSvg.setAttribute('viewBox', '0 0 ' + W + ' ' + GRAPH_H);
+
+        const innerW = W - 2 * GRAPH_PAD_X;
+        const innerH = GRAPH_H - 2 * GRAPH_PAD_Y;
+        const N = evals.length;
+
+        function xAt(ply) {
+            if (N <= 1) return W / 2;
+            return GRAPH_PAD_X + ply * (innerW / (N - 1));
+        }
+        // Y mapping: clamped cp [-1000, +1000] → y [bottom, top].
+        function yAt(scoreCp, mateIn) {
+            const cp = evalToClampedCp(scoreCp, mateIn);
+            // (cp + 1000) / 2000 = 0..1 (0 = -1000 cp, 1 = +1000 cp).
+            // 1 - … = invertujeme (kladná výhoda nahoře).
+            return GRAPH_PAD_Y + (1 - (cp + GRAPH_CP_CLAMP) / (2 * GRAPH_CP_CLAMP)) * innerH;
+        }
+
+        const parts = [];
+        // Středová čára (eval = 0).
+        const zeroY = GRAPH_PAD_Y + innerH / 2;
+        parts.push(
+            '<line x1="' + GRAPH_PAD_X + '" y1="' + zeroY +
+            '" x2="' + (W - GRAPH_PAD_X) + '" y2="' + zeroY +
+            '" stroke="#bbb" stroke-width="0.5" stroke-dasharray="3,3"/>'
+        );
+
+        // Cesta = eval křivka. Game-over pozice přeskakujeme — bez evalu nic nekreslíme.
+        let d = '';
+        for (let i = 0; i < N; i++) {
+            const e = evals[i];
+            if (e.game_over) continue;
+            const cmd = d ? ' L ' : 'M ';
+            d += cmd + xAt(i).toFixed(2) + ' ' + yAt(e.score_cp, e.mate_in).toFixed(2);
+        }
+        parts.push(
+            '<path d="' + d + '" fill="none" stroke="#5a3a1a" stroke-width="1.5" stroke-linejoin="round"/>'
+        );
+
+        // Vertikální cursor podle state.ply (sync s šachovnicí). Renderujeme i pro ply 0.
+        parts.push(
+            '<line id="graph-cursor" x1="' + xAt(state.ply).toFixed(2) +
+            '" y1="' + GRAPH_PAD_Y + '" x2="' + xAt(state.ply).toFixed(2) +
+            '" y2="' + (GRAPH_H - GRAPH_PAD_Y) +
+            '" stroke="#5a3a1a" stroke-width="1" opacity="0.5"/>'
+        );
+
+        // Body — klikací cíle + zvýraznění blunderů.
+        // Blunder detekce: pro ply i (i ≥ 1) porovnáme s ply i-1 z pohledu hráče, který tahnul.
+        // Ply 0 = startpos (white to move) → po 1. tahu jsme na ply 1 (po tahu bílého).
+        // Z toho: tah, který vedl k ply i, dělal hráč na tahu na pozici i-1.
+        //   - i-1 sudý (0, 2, 4...) = white to move = white tahl
+        //   - i-1 lichý                                  = black tahl
+        for (let i = 0; i < N; i++) {
+            const e = evals[i];
+            if (e.game_over) continue;
+            const x = xAt(i);
+            const y = yAt(e.score_cp, e.mate_in);
+
+            let isBlunder = false;
+            if (i > 0 && !evals[i - 1].game_over) {
+                const prevCp = evalToClampedCp(evals[i-1].score_cp, evals[i-1].mate_in);
+                const currCp = evalToClampedCp(e.score_cp, e.mate_in);
+                const whiteMoved = (i - 1) % 2 === 0;
+                // Drop z pohledu hráče, který tahnul (kladný = horší pro něj).
+                const drop = whiteMoved ? (prevCp - currCp) : (currCp - prevCp);
+                isBlunder = drop > BLUNDER_CP;
+            }
+
+            const fill = isBlunder ? '#c00' : '#fff';
+            const stroke = isBlunder ? '#c00' : '#5a3a1a';
+            const r = isBlunder ? 4 : 2.2;
+
+            // SAN tah pro tooltip — pro ply 0 žádný tah neexistuje (startpos).
+            // moves[i-1] = tah, který vedl k pozici i.
+            const sanLabel = i > 0 && state.game.moves[i-1] ? state.game.moves[i-1].san : '(start)';
+            const scoreLabel = formatScoreShort(e.score_cp, e.mate_in);
+            const tooltip = 'ply ' + i + ' · ' + sanLabel + ' · ' + scoreLabel +
+                            (isBlunder ? ' (BLUNDER)' : '');
+
+            parts.push(
+                '<circle class="graph-dot" data-ply="' + i + '"' +
+                ' cx="' + x.toFixed(2) + '" cy="' + y.toFixed(2) + '" r="' + r + '"' +
+                ' fill="' + fill + '" stroke="' + stroke + '" stroke-width="1">' +
+                '<title>' + escapeHtml(tooltip) + '</title>' +
+                '</circle>'
+            );
+        }
+
+        $evalGraphSvg.innerHTML = parts.join('');
+
+        // Bind kliky na body — skok na ply.
+        $evalGraphSvg.querySelectorAll('.graph-dot').forEach((el) => {
+            el.addEventListener('click', () => {
+                setPly(parseInt(el.dataset.ply, 10));
+            });
+        });
+    }
+
+    // Aktualizuje jen pozici vertikálního cursoru — voláme z setPly() místo full re-render.
+    function updateGraphCursor() {
+        if (!state.gameEvals) return;
+        const cursor = document.getElementById('graph-cursor');
+        if (!cursor) return;
+        const W = $evalGraphSvg.clientWidth || 720;
+        const N = state.gameEvals.evals.length;
+        const x = N <= 1 ? W / 2 : GRAPH_PAD_X + state.ply * ((W - 2 * GRAPH_PAD_X) / (N - 1));
+        cursor.setAttribute('x1', x.toFixed(2));
+        cursor.setAttribute('x2', x.toFixed(2));
+    }
+
+    // Resetuje graf — voláme při loadu nové partie (předchozí evals už nesedí).
+    function clearGraph() {
+        state.gameEvals = null;
+        $evalGraphSvg.innerHTML = '';
+        if (!state.game) {
+            $analyseGameStatus.textContent = '(nejdřív načti partii)';
+        } else {
+            $analyseGameStatus.textContent = '(klikni pro analýzu celé partie)';
+        }
+    }
+
     async function analyse() {
         const fen = currentFen();
         if (!fen) return;
@@ -607,6 +848,13 @@ button:disabled, button:disabled:hover {
         state.autoAnalyse = $autoToggle.checked;
         if (state.autoAnalyse && state.game) analyse();
     });
+    $analyseGameBtn.addEventListener('click', analyseGame);
+
+    // ResizeObserver — při změně šířky okna překresli graf (SVG souřadnice jsou v px).
+    // (Cheap: jen překreslíme když máme co kreslit.)
+    new ResizeObserver(() => {
+        if (state.gameEvals) renderGraph();
+    }).observe($evalGraphSvg);
     // Ctrl+Enter v textarea = load (rychlejší než klikat).
     $input.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {

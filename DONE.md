@@ -2,6 +2,15 @@
 
 Hotové úkoly. Nejnovější nahoře.
 
+## 2026-05-17 — Eval graf přes partii
+
+- **Backend** `POST /api/engine/analyse_game` — vstup list FEN, výstup list `{ply, score_cp, mate_in}` + `total_time`. **Persistent Stockfish** v rámci requestu (open 1×, sériová analýza N pozic, close) — pro 80 pozic řádově rychlejší než spawn-per-position. Default `time_per_move=0.3s` (limit 0.05–2.0), max 400 pozic.
+- **Engine refactor** — extrakce `_stockfish_path_or_raise()` + `_score_to_cp_mate()` helperů (DRY, sdíleno mezi `analyse_fen` a `analyse_game_fens`). Nový model `PositionEval` (lehký, bez best_move, s `game_over` flagem pro koncové pozice).
+- **Frontend** — tlačítko „Analyzovat partii (0.3s/tah)" pod layoutem. SVG graf 100% × 140 px, padding 6/8 px, středová zero line, křivka brown `#5a3a1a`, vertikální cursor sleduje `state.ply`. Klik na bod = `setPly()`. **Blundery** (drop > 150 cp z pohledu hráče, který tahnul) jako červené body s tooltip `ply N · SAN · ±X.X (BLUNDER)`. Mate clamp ±1000 cp (izomorfně s eval barem).
+- **Fake progress** v status řádku (`Analyzuji… 3.2s / ~24s`) — backend nemá streaming, počítáme `elapsed / N×0.3`.
+- **ResizeObserver** na SVG → re-render při změně šířky okna (souřadnice v px).
+- README aktualizován.
+
 ## 2026-05-17 — Stockfish analýza: vizuální komponenty
 
 - **Eval bar** — svislý 24×420 px sloupec vlevo od šachovnice. Lineární škála ±1000 cp → 0–100 % bílé, mate = plný extrém. Číselný popisek uvnitř (`+1.5` / `-M3`), barva textu podle převahy. Smooth `transition: height 0.25s`.

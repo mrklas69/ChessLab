@@ -4,7 +4,6 @@ Aktivní úkoly pro ChessLab MVP. Po dokončení přesouvej do `DONE.md`.
 
 ## MVP — fáze 1
 
-- [ ] **Eval graf přes partii** — křivka hodnocení tahů, identifikace blunderů (drop > 1.5 pawn).
 - [ ] **Hraní proti UCI enginu** — drag-and-drop UI (vanilla JS + chessboard.js), výběr enginu, čas/level, auto-promote na dámu.
 - [ ] **Engine arena (basic)** — dva UCI enginy proti sobě, X partií, výsledek, ELO tabulka.
 - [ ] **Import partií z Lichess API** — stáhnout svoje partie přes `berserk` / `httpx`, uložit do SQLite.
