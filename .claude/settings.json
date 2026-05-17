@@ -1,7 +1,10 @@
 {
   "permissions": {
     "allow": [
-      "Bash(git fetch *)"
+      "Bash(git fetch *)",
+      "Bash(uv run --directory \"C:\\Users\\mrkla\\source\\ChessLab\" chesslab)",
+      "PowerShell(Test-NetConnection *)",
+      "PowerShell(Get-NetTCPConnection *)"
     ]
   }
 }
