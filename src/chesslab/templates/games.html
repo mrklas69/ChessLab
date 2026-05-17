@@ -1,0 +1,381 @@
+{# Browser stažených partií — tabulka s filtry. Klik na řádek → otevři v /pgn.
+   PGN handoff přes localStorage['chesslab-pending-pgn'] — stejný pattern jako
+   /play → /pgn (handler v pgn.html ho přečte a auto-spustí analýzu celé partie). #}
+{% extends "base.html" %}
+
+{% block title %}Stažené partie · ChessLab{% endblock %}
+
+{% block style %}
+/* === Filter bar =========================================================== */
+.filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    background: #f4f1e8;
+    border: 1px solid #d4c8a8;
+    border-radius: 4px;
+    padding: 10px 14px;
+    margin: 14px 0;
+    font-size: 0.92em;
+    align-items: center;
+}
+.filters label {
+    color: #555;
+    margin-right: 4px;
+}
+.filters select, .filters input[type="text"] {
+    padding: 4px 8px;
+    font-family: inherit;
+    font-size: 0.95em;
+    border: 1px solid #c0b890;
+    border-radius: 3px;
+    background: #fff;
+}
+.filters .count {
+    margin-left: auto;
+    color: #5a3a1a;
+    font-weight: bold;
+    font-variant-numeric: tabular-nums;
+}
+
+/* === Tabulka ============================================================== */
+table.games {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9em;
+    margin-top: 14px;
+}
+table.games th, table.games td {
+    text-align: left;
+    padding: 6px 10px;
+    border-bottom: 1px solid #e0d8b8;
+}
+table.games th {
+    background: #ece4c8;
+    font-weight: normal;
+    color: #5a3a1a;
+    cursor: default;
+    user-select: none;  /* dvojklik na hlavičku nevybere text */
+}
+table.games th[data-sort] { cursor: pointer; }
+table.games th[data-sort]:hover { background: #ddd098; }
+table.games th.sort-active { color: #1a1a1a; font-weight: bold; }
+table.games tbody tr:hover { background: #faf6e8; cursor: pointer; }
+table.games td.center { text-align: center; }
+table.games td.num { text-align: right; font-variant-numeric: tabular-nums; }
+table.games td.result { font-weight: bold; }
+table.games td.result.win  { color: #1a6b1a; }
+table.games td.result.loss { color: #b22222; }
+table.games td.result.draw { color: #777; }
+table.games td.color-w { color: #888; }
+table.games td.color-b { color: #1a1a1a; font-weight: bold; }
+table.games td.term { font-size: 0.82em; color: #777; }
+table.games td.opening { font-size: 0.88em; color: #555; }
+table.games td.date { font-size: 0.85em; color: #666; white-space: nowrap; }
+table.games td.action a {
+    color: #5a3a1a;
+    text-decoration: none;
+    font-size: 0.85em;
+}
+table.games td.action a:hover { text-decoration: underline; }
+
+/* === Empty state / status ================================================= */
+.empty {
+    background: #f4f1e8;
+    border-left: 4px solid #5a3a1a;
+    padding: 18px 22px;
+    margin: 18px 0;
+    font-size: 0.95em;
+}
+.empty strong { color: #5a3a1a; }
+.status { color: #555; font-size: 0.92em; margin: 10px 0; }
+.status.error { color: #b22222; }
+{% endblock %}
+
+{% block content %}
+<h1>Stažené partie</h1>
+<p>Lokální DB partií (importovaných z Lichess). Klik na řádek otevře partii v
+   <a href="/pgn">/pgn</a> a spustí analýzu Stockfishem.</p>
+
+<div class="filters">
+    <label for="f-color">Barva:</label>
+    <select id="f-color">
+        <option value="all">Vše</option>
+        <option value="white">Bílý</option>
+        <option value="black">Černý</option>
+    </select>
+
+    <label for="f-result">Výsledek:</label>
+    <select id="f-result">
+        <option value="all">Vše</option>
+        <option value="win">Výhra</option>
+        <option value="loss">Prohra</option>
+        <option value="draw">Remíza</option>
+    </select>
+
+    <label for="f-speed">Tempo:</label>
+    <select id="f-speed">
+        <option value="">Vše</option>
+        <option value="ultraBullet">UltraBullet</option>
+        <option value="bullet">Bullet</option>
+        <option value="blitz">Blitz</option>
+        <option value="rapid">Rapid</option>
+        <option value="classical">Classical</option>
+        <option value="correspondence">Correspondence</option>
+    </select>
+
+    <span class="count" id="count">…</span>
+</div>
+
+<div class="status" id="status"></div>
+
+<div id="empty-state" class="empty" style="display: none;">
+    <strong>DB je prázdná.</strong>
+    Naimportuj partie přes <a href="/import">/import</a> a vrať se sem.
+</div>
+
+<table class="games" id="games-table" style="display: none;">
+    <thead>
+        <tr>
+            <th data-sort="created_at">Datum</th>
+            <th data-sort="speed" class="center">Tempo</th>
+            <th data-sort="color" class="center">Barva</th>
+            <th data-sort="opponent">Soupeř</th>
+            <th data-sort="opponent_rating" class="num">Rating</th>
+            <th data-sort="result" class="center">Výsledek</th>
+            <th data-sort="termination" class="center">Konec</th>
+            <th data-sort="plies" class="num">Tahy</th>
+            <th data-sort="opening_eco">Otevírka</th>
+            <th class="center">Akce</th>
+        </tr>
+    </thead>
+    <tbody id="tbody"></tbody>
+</table>
+{% endblock %}
+
+{% block script %}
+<script>
+const $ = (id) => document.getElementById(id);
+
+// === Formatting helpery =====================================================
+function formatDate(ms) {
+    if (!ms) return '—';
+    // toLocaleString cs-CZ dá '17. 5. 2026 14:23' apod.
+    return new Date(ms).toLocaleString('cs-CZ', {
+        dateStyle: 'short',
+        timeStyle: 'short',
+    });
+}
+
+function escapeHtml(s) {
+    if (s == null) return '';
+    return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
+// === Render tabulky =========================================================
+function renderRow(g) {
+    // Plies → full moves: půltahy/2 zaokrouhleno nahoru (lichá končí bílým tahem).
+    const fullMoves = g.plies ? Math.ceil(g.plies / 2) : '—';
+    const opening = g.opening_eco
+        ? `${g.opening_eco} ${escapeHtml(g.opening_name || '')}`
+        : escapeHtml(g.opening_name || '—');
+    const opponent = g.opponent
+        ? escapeHtml(g.opponent)
+        : '<span style="color:#aaa">anonymous</span>';
+    const opponentRating = g.opponent_rating ?? '—';
+    const resultLabel = g.result === 'win' ? '+'
+                      : g.result === 'loss' ? '−'
+                      : g.result === 'draw' ? '½'
+                      : '?';
+
+    return `
+        <tr data-id="${escapeHtml(g.id)}">
+            <td class="date">${formatDate(g.created_at)}</td>
+            <td class="center">${escapeHtml(g.speed || '—')}</td>
+            <td class="center color-${g.color === 'white' ? 'w' : 'b'}">${g.color === 'white' ? '♔' : '♚'}</td>
+            <td>${opponent}</td>
+            <td class="num">${opponentRating}</td>
+            <td class="center result ${g.result || ''}">${resultLabel}</td>
+            <td class="center term">${escapeHtml(g.termination || '')}</td>
+            <td class="num">${fullMoves}</td>
+            <td class="opening">${opening}</td>
+            <td class="center action"><a href="#" class="open-pgn">otevřít →</a></td>
+        </tr>
+    `;
+}
+
+// === Načítání seznamu =======================================================
+function readFilters() {
+    const params = new URLSearchParams();
+    const color = $('f-color').value;
+    const result = $('f-result').value;
+    const speed = $('f-speed').value;
+    if (color !== 'all') params.set('color', color);
+    if (result !== 'all') params.set('result', result);
+    if (speed) params.set('speed', speed);
+    return params.toString();
+}
+
+// === State ==================================================================
+// Držíme poslední fetch v paměti, abychom mohli sortovat klient-side bez
+// dalšího round-tripu na backend (max 500 řádků = instantní).
+const state = {
+    games: [],
+    sortKey: 'created_at',
+    sortDir: 'desc',
+};
+
+// === Sort ===================================================================
+// Comparator: null vždy na konec (bez ohledu na směr — jinak by se v opačném
+// směru vyplavaly nahoru a vypadalo by to jako "rozbito"). Stringy přes
+// localeCompare (cs-CZ: 'á' před 'b'), čísla aritmeticky.
+function compareGames(a, b, key, dir) {
+    const av = a[key];
+    const bv = b[key];
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    let cmp;
+    if (typeof av === 'number' && typeof bv === 'number') {
+        cmp = av - bv;
+    } else {
+        cmp = String(av).localeCompare(String(bv), 'cs');
+    }
+    return dir === 'asc' ? cmp : -cmp;
+}
+
+function applySortAndRender() {
+    // Slice = nemutujeme state.games (kdybychom volali sort opakovaně s jiným
+    // klíčem, in-place sort by zbytečně reordovai původní pole).
+    const sorted = state.games.slice().sort(
+        (a, b) => compareGames(a, b, state.sortKey, state.sortDir)
+    );
+    renderRows(sorted);
+    updateSortIndicators();
+}
+
+function updateSortIndicators() {
+    // Při init si uložíme originální label do data-label (textContent přepisujeme
+    // glyphem). Bezpečné — th nemají vnořené HTML.
+    document.querySelectorAll('th[data-sort]').forEach(th => {
+        if (!th.dataset.label) th.dataset.label = th.textContent;
+        const isActive = th.dataset.sort === state.sortKey;
+        const glyph = isActive ? (state.sortDir === 'asc' ? ' ▲' : ' ▼') : '';
+        th.textContent = th.dataset.label + glyph;
+        th.classList.toggle('sort-active', isActive);
+    });
+}
+
+// === Načítání seznamu =======================================================
+async function loadGames() {
+    const statusEl = $('status');
+    statusEl.classList.remove('error');
+    statusEl.textContent = 'Načítám…';
+
+    const qs = readFilters();
+    try {
+        const resp = await fetch('/api/games' + (qs ? '?' + qs : ''));
+        if (!resp.ok) {
+            statusEl.textContent = `Chyba: HTTP ${resp.status}`;
+            statusEl.classList.add('error');
+            return;
+        }
+        state.games = await resp.json();
+        applySortAndRender();
+        statusEl.textContent = '';
+    } catch (e) {
+        statusEl.textContent = `Síťová chyba: ${e.message}`;
+        statusEl.classList.add('error');
+    }
+}
+
+function renderRows(games) {
+    const table = $('games-table');
+    const empty = $('empty-state');
+    const countEl = $('count');
+
+    countEl.textContent = `${games.length} partií`;
+
+    if (games.length === 0) {
+        table.style.display = 'none';
+        // Empty state ukážeme jen pokud je DB úplně prázdná (řeší se v initial
+        // load přes /api/games/count). Když je 0 ve filtru ale DB něco má,
+        // tabulka prostě zmizí — count v filter baru je '0 partií'.
+        return;
+    }
+
+    $('tbody').innerHTML = games.map(renderRow).join('');
+    table.style.display = 'table';
+    empty.style.display = 'none';
+}
+
+// === Klik na hlavičku → sort ================================================
+document.querySelectorAll('th[data-sort]').forEach(th => {
+    th.addEventListener('click', () => {
+        const key = th.dataset.sort;
+        if (state.sortKey === key) {
+            // Stejný sloupec — flip směru.
+            state.sortDir = state.sortDir === 'asc' ? 'desc' : 'asc';
+        } else {
+            state.sortKey = key;
+            // Default směr per typ: pro číselný sloupec (rating, plies, datum)
+            // má smysl 'největší nahoře' (desc), pro string 'A→Z' (asc).
+            // Vzorek hodnoty z dat, ne hardcoded mapa — sloupec přidaný v budoucnu
+            // se zachová sám.
+            const sample = state.games.find(g => g[key] != null)?.[key];
+            state.sortDir = typeof sample === 'number' ? 'desc' : 'asc';
+        }
+        applySortAndRender();
+    });
+});
+
+// === Klik na řádek → otevřít v /pgn =========================================
+// Event delegation na tbody — jeden listener pro všechny řádky (i ty,
+// co přibydou po re-renderu).
+$('tbody').addEventListener('click', async (e) => {
+    const tr = e.target.closest('tr[data-id]');
+    if (!tr) return;
+    e.preventDefault();
+    const gameId = tr.dataset.id;
+    try {
+        const resp = await fetch(`/api/games/${encodeURIComponent(gameId)}/pgn`);
+        if (!resp.ok) {
+            alert(`Nepodařilo se načíst PGN: HTTP ${resp.status}`);
+            return;
+        }
+        const pgnText = await resp.text();
+        // Handoff přes localStorage — /pgn handler ho přečte na load,
+        // naloaduje a auto-spustí analýzu (viz pgn.html).
+        localStorage.setItem('chesslab-pending-pgn', pgnText);
+        window.open('/pgn', '_blank');
+    } catch (err) {
+        alert(`Síťová chyba: ${err.message}`);
+    }
+});
+
+// === Filtry: change → reload ================================================
+['f-color', 'f-result', 'f-speed'].forEach(id => {
+    $(id).addEventListener('change', loadGames);
+});
+
+// === Initial load: count → empty state nebo loadGames =======================
+(async () => {
+    try {
+        const resp = await fetch('/api/games/count');
+        const { count } = await resp.json();
+        if (count === 0) {
+            $('empty-state').style.display = 'block';
+            $('count').textContent = '0 partií';
+            return;
+        }
+        await loadGames();
+    } catch (e) {
+        $('status').textContent = `Síťová chyba: ${e.message}`;
+        $('status').classList.add('error');
+    }
+})();
+</script>
+{% endblock %}

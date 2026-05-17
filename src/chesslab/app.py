@@ -1,8 +1,12 @@
 """FastAPI aplikace ChessLab — webové UI nad lokálním Python backendem."""
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Literal
 
 import chess
+import httpx
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
@@ -25,6 +29,7 @@ from chesslab.arena import (
 )
 from chesslab.arena import SKILL_MAX as ARENA_SKILL_MAX
 from chesslab.arena import SKILL_MIN as ARENA_SKILL_MIN
+from chesslab.db import init_db
 from chesslab.engine import (
     DEFAULT_STOCKFISH_PATH,
     EngineAnalysis,
@@ -33,6 +38,15 @@ from chesslab.engine import (
     analyse_game_fens,
 )
 from chesslab.engines import EngineInfo, list_available_engines
+from chesslab.games import (
+    GameSummary,
+    ImportResult,
+    count_games,
+    get_game_pgn,
+    import_lichess_user,
+    list_games,
+)
+from chesslab.lichess import DEFAULT_MAX_GAMES, HARD_MAX_GAMES
 from chesslab.pgn import PgnGame, parse_pgn
 from chesslab.play import (
     SKILL_DEFAULT,
@@ -48,9 +62,20 @@ from chesslab.play import (
     undo_last_move,
 )
 
+
+# === Lifespan ================================================================
+# Lifespan = startup/shutdown hook. Při startu inicializujeme DB schema
+# (idempotentní — IF NOT EXISTS), takže první spuštění po `uv sync` vytvoří
+# `data/chesslab.db` automaticky, žádný extra příkaz.
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    init_db()
+    yield
+
+
 # FastAPI instance — to je hlavní objekt, který uvicorn umí spustit.
 # title se zobrazí v /docs (auto-generated OpenAPI dokumentace).
-app = FastAPI(title="ChessLab", version=__version__)
+app = FastAPI(title="ChessLab", version=__version__, lifespan=lifespan)
 
 # Jinja2 templates — cestu odvodíme od umístění tohoto modulu, ať to funguje
 # i když je projekt instalovaný jako balíček (ne jen běh z source dir).
@@ -113,6 +138,25 @@ def play_page(request: Request) -> HTMLResponse:
             "think_time_max": THINK_TIME_MAX,
         },
     )
+
+
+@app.get("/import", response_class=HTMLResponse)
+def import_page(request: Request) -> HTMLResponse:
+    """Import partií z externích zdrojů (zatím jen Lichess)."""
+    return templates.TemplateResponse(
+        request=request,
+        name="import.html",
+        context={
+            "default_max_games": DEFAULT_MAX_GAMES,
+            "hard_max_games": HARD_MAX_GAMES,
+        },
+    )
+
+
+@app.get("/games", response_class=HTMLResponse)
+def games_page(request: Request) -> HTMLResponse:
+    """Browser stažených partií — tabulka s filtry, klik → analýza v /pgn."""
+    return templates.TemplateResponse(request=request, name="games.html")
 
 
 @app.get("/health")
@@ -381,3 +425,99 @@ def api_arena_run(req: ArenaConfig) -> ArenaResult:
     except Exception as exc:
         # python-chess engine errors (EngineTerminatedError, EngineError, ...) — 500.
         raise HTTPException(status_code=500, detail=f"Engine chyba: {exc}") from exc
+
+
+# === Import API (Lichess) ====================================================
+
+
+class LichessImportRequest(BaseModel):
+    """Vstupní payload pro /api/import/lichess."""
+
+    username: str = Field(
+        ...,
+        description="Lichess username (case-insensitive).",
+        min_length=1,
+        max_length=64,
+    )
+    max_games: int = Field(
+        DEFAULT_MAX_GAMES,
+        description=f"Max počet partií ke stažení (1–{HARD_MAX_GAMES}).",
+        ge=1,
+        le=HARD_MAX_GAMES,
+    )
+
+
+@app.post("/api/import/lichess", response_model=ImportResult)
+def api_import_lichess(req: LichessImportRequest) -> ImportResult:
+    """Stáhne partie uživatele z Lichess + uloží do DB (UPSERT, žádné duplikáty).
+
+    Synchronní endpoint — pro 100 partií typicky 5–15s wait. Vyšší max_games
+    riskují klientův timeout (lze přidat streaming/SSE později).
+
+    Status mapping:
+      - 404: user neexistuje
+      - 429: Lichess rate limit
+      - 502: jiný HTTP error z Lichess API
+      - 504: timeout
+      - 400: validation error (špatné parametry)
+    """
+    try:
+        return import_lichess_user(req.username, req.max_games)
+    except ValueError as exc:
+        # Validation error (prázdný username, max_games mimo rozsah) — bylo by
+        # už chyceno Pydantic, ale safety net.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code
+        body = exc.response.text[:200]  # truncate ať nezahltíme error message
+        if status in (404, 429):
+            raise HTTPException(status_code=status, detail=f"Lichess API: {body}") from exc
+        # Jiný HTTP error mapujeme na 502 Bad Gateway (problém s upstreamem).
+        raise HTTPException(status_code=502, detail=f"Lichess API ({status}): {body}") from exc
+    except httpx.TimeoutException as exc:
+        raise HTTPException(status_code=504, detail="Lichess API timeout") from exc
+
+
+# === Games API ===============================================================
+
+
+@app.get("/api/games", response_model=list[GameSummary])
+def api_games_list(
+    username: str | None = None,
+    color: Literal["all", "white", "black"] = "all",
+    result: Literal["all", "win", "loss", "draw"] = "all",
+    speed: str | None = None,
+    limit: int = 500,
+) -> list[GameSummary]:
+    """Vrátí seznam stažených partií podle filtrů (od nejnovější).
+
+    Query params: ?username=foo&color=white&result=win&speed=blitz&limit=100.
+    Bez filtru = všechny partie v DB (LIMIT 500 safety cap).
+    """
+    # Cap zvenku, ať klient nemůže poslat limit=1000000.
+    safe_limit = max(1, min(limit, 500))
+    return list_games(
+        username=username,
+        color=color,
+        result=result,
+        speed=speed,
+        limit=safe_limit,
+    )
+
+
+@app.get("/api/games/count")
+def api_games_count() -> dict[str, int]:
+    """Celkový počet partií v DB. Pro empty-state UI na /games."""
+    return {"count": count_games()}
+
+
+@app.get("/api/games/{game_id}/pgn")
+def api_game_pgn(game_id: str) -> Response:
+    """Vrátí PGN partie jako plain text (frontend ho dá do /pgn přes localStorage)."""
+    pgn = get_game_pgn(game_id)
+    if pgn is None:
+        raise HTTPException(status_code=404, detail=f"Partie {game_id!r} nenalezena")
+    return Response(
+        content=pgn,
+        media_type="application/x-chess-pgn; charset=utf-8",
+    )

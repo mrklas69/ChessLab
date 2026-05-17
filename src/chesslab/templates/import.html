@@ -1,0 +1,241 @@
+{# Import partií z externích zdrojů. Zatím jen Lichess (public games, bez auth). #}
+{% extends "base.html" %}
+
+{% block title %}Import partií · ChessLab{% endblock %}
+
+{% block style %}
+/* === Form layout ========================================================== */
+.import-section {
+    background: #f4f1e8;
+    border: 1px solid #d4c8a8;
+    border-radius: 4px;
+    padding: 14px 18px;
+    margin: 18px 0;
+}
+.import-section h2 {
+    margin: 0 0 12px;
+    color: #5a3a1a;
+    font-size: 1.1em;
+}
+.field {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 10px 0;
+    font-size: 0.92em;
+}
+.field label {
+    flex: 0 0 110px;
+    color: #555;
+}
+.field input[type="text"] {
+    flex: 1;
+    padding: 6px 10px;
+    font-family: monospace;
+    font-size: 0.95em;
+    border: 1px solid #c0b890;
+    border-radius: 3px;
+    background: #fff;
+    min-width: 0;
+}
+.field input[type="range"] { flex: 1; }
+.field .value-label {
+    flex: 0 0 50px;
+    text-align: right;
+    font-weight: bold;
+    color: #1a1a1a;
+    font-variant-numeric: tabular-nums;
+}
+.run-row {
+    display: flex;
+    gap: 14px;
+    align-items: center;
+    margin-top: 14px;
+}
+button.primary {
+    padding: 8px 20px;
+    font-size: 1em;
+    background: #5a3a1a;
+    color: #fff;
+    border: none;
+    border-radius: 3px;
+    cursor: pointer;
+    font-family: inherit;
+}
+button.primary:hover:not(:disabled) { background: #3a2410; }
+button.primary:disabled { background: #aaa; cursor: not-allowed; }
+.status {
+    color: #555;
+    font-size: 0.92em;
+    font-variant-numeric: tabular-nums;
+}
+.status.error { color: #b22222; }
+
+/* === Výsledkový panel ===================================================== */
+.results { margin-top: 24px; }
+.summary {
+    background: #ece4c8;
+    border-left: 4px solid #5a3a1a;
+    padding: 14px 18px;
+    margin-bottom: 14px;
+}
+.summary .headline {
+    font-size: 1.3em;
+    font-weight: bold;
+    color: #1a1a1a;
+    margin-bottom: 6px;
+}
+.summary .meta {
+    font-size: 0.92em;
+    color: #555;
+}
+.errors-list {
+    margin: 10px 0 14px;
+    padding-left: 22px;
+    font-size: 0.88em;
+    color: #b22222;
+}
+.errors-list li { margin: 3px 0; }
+{% endblock %}
+
+{% block content %}
+<h1>Import partií</h1>
+<p>Stáhne tvoje partie z externího zdroje a uloží je do lokální DB
+   (<code>data/chesslab.db</code>). Opětovný import je idempotentní —
+   duplikáty se přeskočí, žádná data se nepřepíšou.</p>
+
+<div class="import-section">
+    <h2>Lichess</h2>
+    <p style="margin: 0 0 10px; font-size: 0.9em; color: #666;">
+        Public partie (bez OAuth). Limit 1–{{ hard_max_games }} partií / request.
+    </p>
+
+    <div class="field">
+        <label for="username">Username:</label>
+        <input type="text" id="username" placeholder="např. TirelessWoodpusher" autocomplete="off">
+    </div>
+    <div class="field">
+        <label for="max-games">Max partií:</label>
+        <input type="range" id="max-games" min="1" max="{{ hard_max_games }}" step="1" value="{{ default_max_games }}">
+        <span class="value-label" id="max-games-val">{{ default_max_games }}</span>
+    </div>
+
+    <div class="run-row">
+        <button class="primary" id="run-btn">Stáhnout</button>
+        <span class="status" id="status">Připraveno.</span>
+    </div>
+</div>
+
+<div class="results" id="results" style="display: none;">
+    <div class="summary" id="summary"></div>
+    <ul class="errors-list" id="errors-list"></ul>
+    <p><a href="/games" id="open-games">Otevřít browser partií →</a></p>
+</div>
+{% endblock %}
+
+{% block script %}
+<script>
+// === DOM helpery =============================================================
+const $ = (id) => document.getElementById(id);
+
+// === Slider label ============================================================
+const slider = $('max-games');
+const sliderLabel = $('max-games-val');
+slider.addEventListener('input', () => { sliderLabel.textContent = slider.value; });
+
+// === Username persistence ====================================================
+// Zapamatuj si poslední username v localStorage — větší šance, že user importuje
+// opakovaně stejný účet.
+const LS_KEY = 'chesslab-lichess-username';
+const usernameInput = $('username');
+usernameInput.value = localStorage.getItem(LS_KEY) || '';
+usernameInput.addEventListener('blur', () => {
+    if (usernameInput.value.trim()) {
+        localStorage.setItem(LS_KEY, usernameInput.value.trim());
+    }
+});
+
+// === Escape pro vykreslení error hlášek =====================================
+function escapeHtml(s) {
+    return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
+// === Run handler =============================================================
+const runBtn = $('run-btn');
+const statusEl = $('status');
+const resultsEl = $('results');
+
+runBtn.addEventListener('click', async () => {
+    const username = usernameInput.value.trim();
+    if (!username) {
+        statusEl.textContent = 'Zadej username.';
+        statusEl.classList.add('error');
+        return;
+    }
+    const maxGames = parseInt(slider.value, 10);
+
+    runBtn.disabled = true;
+    statusEl.classList.remove('error');
+    statusEl.textContent = 'Stahuji…';
+    resultsEl.style.display = 'none';
+
+    // Fake progress — Lichess endpoint je sériový, nemáme stream.
+    // Pro 100 partií typicky 5-15s.
+    const startedAt = performance.now();
+    const tick = setInterval(() => {
+        const elapsed = (performance.now() - startedAt) / 1000;
+        statusEl.textContent = `Stahuji… ${elapsed.toFixed(1)}s`;
+    }, 200);
+
+    try {
+        const resp = await fetch('/api/import/lichess', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, max_games: maxGames }),
+        });
+        clearInterval(tick);
+
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+            statusEl.textContent = `Chyba: ${err.detail || resp.statusText}`;
+            statusEl.classList.add('error');
+            return;
+        }
+
+        const result = await resp.json();
+        statusEl.textContent = `Hotovo za ${((performance.now() - startedAt) / 1000).toFixed(1)}s.`;
+        renderResults(result);
+    } catch (e) {
+        clearInterval(tick);
+        statusEl.textContent = `Síťová chyba: ${e.message}`;
+        statusEl.classList.add('error');
+    } finally {
+        runBtn.disabled = false;
+    }
+});
+
+function renderResults(r) {
+    // Headline = co user nejvíc zajímá: kolik NOVÝCH partií přibylo.
+    $('summary').innerHTML = `
+        <div class="headline">+${r.inserted} nových partií</div>
+        <div class="meta">
+            Požadováno: ${r.requested} ·
+            Stáhnuto: ${r.fetched} ·
+            Vloženo: ${r.inserted} ·
+            Duplikátů přeskočeno: ${r.skipped_existing}
+            ${r.errors > 0 ? ' · Chyb: ' + r.errors : ''}
+        </div>
+    `;
+
+    const errList = $('errors-list');
+    errList.innerHTML = (r.error_messages || [])
+        .map(m => `<li>${escapeHtml(m)}</li>`)
+        .join('');
+
+    resultsEl.style.display = 'block';
+}
+</script>
+{% endblock %}

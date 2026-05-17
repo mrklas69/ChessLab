@@ -1,20 +1,17 @@
 # TODO
 
-Aktivní úkoly pro ChessLab MVP. Po dokončení přesouvej do `DONE.md`.
+Aktivní úkoly pro ChessLab. Po dokončení přesouvej do `DONE.md`.
 
-## MVP — fáze 1
+## Import / DB — fáze 2
 
-- [ ] **Import partií z Lichess API** — stáhnout svoje partie přes `berserk` / `httpx`, uložit do SQLite.
-
-## Infrastruktura
-
-- [ ] **SQLite schema** — partie (PGN), pozice, eval anotace.
-- [ ] **Static assets** — chessboard.js + chess.js přes CDN nebo `static/` adresář.
-- [ ] **Templates** — Jinja2 base layout, partials pro šachovnici / move list.
+- [ ] **Inkrementální import** — `since` parametr (timestamp poslední importované partie), zrychlí re-import z O(n) na O(přírůstek).
+- [ ] **Import z chess.com** — REST API (formát PGN na měsíce, jiný auth model).
+- [ ] **Lichess OAuth** (Bearer token) — pro private/correspondence partie + 60 req/min místo 20.
+- [ ] **Username filtr v /games** — když user importuje víc účtů, dropdown všech distinct usernames z DB.
 
 ## Drobnosti
 
 - [ ] Smazat starou složku `C:\Users\mrkla\source\ChessHub` (harness lock zmizí mimo session).
 - [ ] Rozhodnout o licenci (MIT? Apache 2.0?).
-- [ ] `.env.example` pro `STOCKFISH_PATH` / `CHESSLAB_PORT`.
+- [ ] `.env.example` pro `STOCKFISH_PATH` / `CHESSLAB_PORT` / `CHESSLAB_DB_PATH`.
 

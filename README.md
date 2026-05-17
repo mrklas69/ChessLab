@@ -18,6 +18,8 @@ Osobní šachová laboratoř — lokální Python aplikace s webovým UI, která
 - **Eval graf přes partii** — tlačítko „Analyzovat partii" pošle celou partii Stockfishi (0.3s/pozici, persistent engine). Výstup = SVG křivka pod layoutem, klik na bod = skok na pozici, červené body = blundery (drop > 1.5 pawn z pohledu hráče, který tahnul).
 - **Hra proti enginu** na `/play` — drag-and-drop, **dropdown výběru enginu** (Stockfish nebo vlastní ChessLab engine, auto-discovery z `.venv\Scripts\chesslab-*`), nastavitelný Skill Level (0-20, dimnutý u enginů bez Skill Level option), think time (default scaled), volba barvy, toggle „Show eval" (eval bar) a „Recommended move" (best-move šipka). Highlight posledního engine tahu. Undo (pop 2 plies), Resign, Download PGN. Po skončení hry tlačítko „Analyzovat partii" otevře nový tab s `/pgn` a auto-spustí analýzu (handoff přes localStorage).
 - **Engine arena** na `/arena` — dva UCI enginy proti sobě, batch 1-20 partií, alternace barev. Dropdown výběru enginu pro každou stranu (Stockfish / vlastní ChessLab enginy), Skill slider dim u enginu bez Skill Level option, Path input editovatelný (custom UCI binárka mimo discovery). Výstup: score % + performance rating diff + tabulka partií s per-game PGN download.
+- **Import partií z Lichess** na `/import` — stáhne public partie uživatele přes oficiální export API (bez OAuth, 1-500 partií/request, idempotentní — re-import skipne duplikáty). Uložení do SQLite `data/chesslab.db`.
+- **Browser stažených partií** na `/games` — tabulka s filtry (barva / výsledek / tempo), klik na řádek otevře partii v `/pgn` a auto-spustí Stockfish analýzu celé partie.
 - **Vlastní enginy** — UCI binárky generované z `chesslab.engines.*` přes `uv sync`, auto-discovery v Play i Aréně, sdílená UCI smyčka (`engines/_protocol.py`). Discovery endpoint: `GET /api/engines/list`.
     - **v0: Random Mover** (`.venv\Scripts\chesslab-random.exe`) — náhodný legální tah.
     - **v1: Greedy Material** (`.venv\Scripts\chesslab-greedy.exe`) — 1-ply lookahead nad materiálem (Kaufman piece values + mate/stalemate/check bonusy). +300 Elo nad Random.
@@ -41,6 +43,7 @@ Volitelné env proměnné:
 | `CHESSLAB_HOST` | `127.0.0.1` | Host/interface, na kterém server poslouchá. |
 | `CHESSLAB_PORT` | `8765` | TCP port. |
 | `STOCKFISH_PATH` | `C:\Program Files\stockfish\stockfish-windows-x86-64-avx2.exe` | Cesta ke Stockfish binárce. |
+| `CHESSLAB_DB_PATH` | `<project>/data/chesslab.db` | Cesta k SQLite DB (importované partie). |
 
 ## Vývoj
 
