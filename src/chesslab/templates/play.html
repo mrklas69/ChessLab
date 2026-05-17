@@ -1,0 +1,694 @@
+{# Hraní proti Stockfish — drag-and-drop board + settings + sidebar.
+   Stack identický s pgn.html (chessboard.js, eval bar, best-move šipka)
+   pro izomorfismus. Eval bar + šipka jsou toggleable přes "Show eval". #}
+{% extends "base.html" %}
+
+{% block title %}Hra · ChessLab{% endblock %}
+
+{% block head %}
+<link rel="stylesheet"
+      href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css">
+{% endblock %}
+
+{% block style %}
+/* === Settings panel (nahoře, plná šířka) ================================== */
+.settings {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 18px;
+    padding: 12px 16px;
+    background: #f4f1e8;
+    border-radius: 4px;
+    margin-bottom: 16px;
+    font-size: 0.9em;
+}
+.settings label { color: #555; }
+.settings input[type="radio"] { margin: 0 4px 0 8px; vertical-align: middle; }
+.settings input[type="range"] {
+    vertical-align: middle;
+    width: 120px;
+    margin: 0 6px;
+}
+.settings .value-label {
+    display: inline-block;
+    min-width: 2.4em;
+    font-family: 'Consolas', 'Courier New', monospace;
+    color: #1a1a1a;
+}
+.settings input[type="checkbox"] { margin: 0 4px 0 0; vertical-align: middle; }
+
+/* === Layout: eval-bar + board (vlevo) | sidebar (vpravo) =================== */
+.layout {
+    display: grid;
+    grid-template-columns: 460px 1fr;
+    gap: 32px;
+    align-items: start;
+}
+.board-wrapper {
+    display: flex;
+    gap: 8px;
+    align-items: stretch;
+}
+.board-with-arrow {
+    position: relative;
+    width: 420px;
+    height: 420px;
+}
+#board { width: 420px; }
+.arrow-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+}
+/* Highlight from/to políčka posledního tahu enginu — lichess-style žlutozelený tint.
+   box-shadow inset překrývá pozadí, ale nemaže figury (chessboard.js dává <img> uvnitř .square-XX). */
+#board .square-55d63.highlight-last {
+    box-shadow: inset 0 0 0 100px rgba(155, 199, 0, 0.41);
+}
+
+/* === Eval bar (toggleable přes JS — když off, .hidden ho schová) ========== */
+.eval-bar {
+    position: relative;
+    width: 24px;
+    height: 420px;
+    background: #2c2c2c;
+    border: 1px solid #888;
+    border-radius: 2px;
+    overflow: hidden;
+    flex: 0 0 24px;
+}
+.eval-bar.hidden { display: none; }
+.eval-bar-white {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 50%;
+    background: #f0f0f0;
+    transition: height 0.25s ease-out;
+}
+.eval-bar-text {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    font-family: 'Consolas', 'Courier New', monospace;
+    font-size: 0.7em;
+    font-weight: bold;
+    color: #888;
+    pointer-events: none;
+    text-shadow: 0 0 2px rgba(0,0,0,0.5);
+    z-index: 1;
+}
+.eval-bar-text.white { color: #1a1a1a; text-shadow: 0 0 2px rgba(255,255,255,0.7); }
+.eval-bar-text.black { color: #f0f0f0; text-shadow: 0 0 2px rgba(0,0,0,0.7); }
+
+/* === Sidebar (status, PGN, akční tlačítka) ================================ */
+.sidebar { display: flex; flex-direction: column; gap: 12px; }
+.status {
+    padding: 12px 14px;
+    background: #f4f1e8;
+    border-radius: 4px;
+    font-weight: bold;
+    min-height: 1.4em;
+}
+.status.thinking { color: #888; font-weight: normal; font-style: italic; }
+.status.game-over { background: #ffe8d8; }
+.last-move {
+    font-size: 0.85em;
+    color: #555;
+    font-family: 'Consolas', 'Courier New', monospace;
+    min-height: 1.4em;
+}
+.moves {
+    font-family: 'Consolas', 'Courier New', monospace;
+    font-size: 0.9em;
+    line-height: 1.8;
+    max-height: 220px;
+    overflow-y: auto;
+    padding: 10px;
+    border: 1px solid #ccc;
+    background: #fafaf6;
+    border-radius: 4px;
+}
+.moves .empty { color: #888; font-style: italic; }
+.moves .move-no { color: #888; margin-right: 4px; }
+.moves .move { margin-right: 6px; }
+
+/* === Akční tlačítka (Undo / Resign / New / Download) ====================== */
+.actions { display: flex; flex-direction: column; gap: 6px; }
+.actions button, .actions a {
+    display: block;
+    box-sizing: border-box;
+    width: 100%;
+    text-align: center;
+    padding: 9px;
+    margin: 0;
+    color: white;
+    text-decoration: none;
+    border: 0;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 0.9em;
+    font-weight: bold;
+    cursor: pointer;
+}
+.actions .undo { background: #5a3a1a; }
+.actions .undo:hover { background: #1a1a1a; }
+.actions .resign { background: #d18a3a; }
+.actions .resign:hover { background: #a86a20; }
+.actions .new-game { background: #5a3a1a; }
+.actions .new-game:hover { background: #1a1a1a; }
+.actions .download { background: #888; }
+.actions .download:hover { background: #555; }
+.actions .analyse { background: #15781B; }   /* lichess-green, sjednoceno s best-move šipkou */
+.actions .analyse:hover { background: #0e5613; }
+.actions button:disabled, .actions a.disabled {
+    background: #ccc !important;
+    cursor: not-allowed;
+    pointer-events: none;
+}
+.error {
+    color: #a00;
+    background: #fee;
+    padding: 8px 12px;
+    border: 1px solid #fbb;
+    border-radius: 4px;
+    display: none;
+}
+{% endblock %}
+
+{% block content %}
+<h1>Hra proti Stockfish</h1>
+
+{# === Settings panel (nahoře, vždy viditelné) =========================== #}
+<div class="settings">
+    <span>
+        <label>Barva:</label>
+        <label><input type="radio" name="color" value="w" checked>Bílý</label>
+        <label><input type="radio" name="color" value="b">Černý</label>
+    </span>
+    <span>
+        <label for="skill">Skill:</label>
+        <input type="range" id="skill" min="{{ skill_min }}" max="{{ skill_max }}" value="{{ skill_default }}">
+        <span class="value-label" id="skill-val">{{ skill_default }}</span>
+    </span>
+    <span>
+        <label for="think-time">Think time:</label>
+        <input type="range" id="think-time"
+               min="{{ think_time_min }}" max="{{ think_time_max }}" step="0.05">
+        <span class="value-label" id="think-time-val">?</span> s
+    </span>
+    <label>
+        <input type="checkbox" id="show-eval">
+        Show eval
+    </label>
+    <label>
+        <input type="checkbox" id="show-recommended">
+        Recommended move
+    </label>
+</div>
+
+<div class="layout">
+    <div>
+        <div class="board-wrapper">
+            {# Eval bar — default skrytý (Show eval = off). #}
+            <div class="eval-bar hidden" id="eval-bar">
+                <div class="eval-bar-white" id="eval-bar-white"></div>
+                <div class="eval-bar-text" id="eval-bar-text">?</div>
+            </div>
+            <div class="board-with-arrow">
+                <div id="board"></div>
+                <svg class="arrow-overlay" id="arrow-overlay">
+                    <defs>
+                        <marker id="arrow-head" viewBox="0 0 10 10"
+                                refX="6" refY="5"
+                                markerWidth="4" markerHeight="4"
+                                orient="auto-start-reverse">
+                            <path d="M 0 0 L 10 5 L 0 10 z" fill="#15781B"/>
+                        </marker>
+                    </defs>
+                    <line id="best-move-arrow"
+                          x1="0" y1="0" x2="0" y2="0"
+                          stroke="#15781B" stroke-width="9" stroke-linecap="round"
+                          opacity="0"
+                          marker-end="url(#arrow-head)"/>
+                </svg>
+            </div>
+        </div>
+    </div>
+
+    <div class="sidebar">
+        <div class="status" id="status">Zvol nastavení a klikni „Nová hra".</div>
+        <div class="last-move" id="last-move"></div>
+        <div class="moves" id="moves">
+            <span class="empty">(žádné tahy)</span>
+        </div>
+        <div class="error" id="error"></div>
+        <div class="actions">
+            <button class="new-game" id="new-game-btn">Nová hra</button>
+            <button class="undo" id="undo-btn" disabled>↶ Undo (vrátit tah)</button>
+            <button class="resign" id="resign-btn" disabled>Vzdát se</button>
+            <button class="analyse" id="analyse-game-btn" disabled
+                    title="Otevře PGN viewer v novém tabu s automatickou analýzou.">
+                Analyzovat partii →
+            </button>
+            <a class="download disabled" id="download-btn" href="/api/play/pgn"
+               download="chesslab-game.pgn">Stáhnout PGN</a>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block script %}
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"></script>
+<script>
+    // === Konstanty (zrcadlí backend) ========================================
+    // Default think time podle skill — vzorec stejný jako v play.py:default_think_time.
+    function defaultThinkTime(skill) {
+        // Math.round na 3 des. místa kvůli sliderů a kosmetice.
+        return Math.round((0.1 + skill * 0.045) * 1000) / 1000;
+    }
+
+    // === Stav klienta =======================================================
+    const state = {
+        // hraje hra? (true po start_game)
+        gameStarted: false,
+        // Hráčova barva ('w' / 'b') — pro chessboard.js orientation.
+        playerColor: 'w',
+        // Aktuální FEN — drží se kvůli show_eval re-fetch.
+        currentFen: null,
+        // Komu patří tah (server diktuje, klient jen disable/enable drag).
+        turn: 'w',
+        gameOver: false,
+        // Aktivní fetch enginu (Analyse pro eval) — kvůli rychlému ovládání zruším.
+        analysisAbort: null,
+    };
+
+    // === DOM ref ============================================================
+    const $status = document.getElementById('status');
+    const $lastMove = document.getElementById('last-move');
+    const $moves = document.getElementById('moves');
+    const $error = document.getElementById('error');
+    const $newGameBtn = document.getElementById('new-game-btn');
+    const $undoBtn = document.getElementById('undo-btn');
+    const $resignBtn = document.getElementById('resign-btn');
+    const $analyseGameBtn = document.getElementById('analyse-game-btn');
+    const $downloadBtn = document.getElementById('download-btn');
+    const $skill = document.getElementById('skill');
+    const $skillVal = document.getElementById('skill-val');
+    const $thinkTime = document.getElementById('think-time');
+    const $thinkTimeVal = document.getElementById('think-time-val');
+    const $showEval = document.getElementById('show-eval');
+    const $showRecommended = document.getElementById('show-recommended');
+    const $evalBar = document.getElementById('eval-bar');
+    const $evalBarWhite = document.getElementById('eval-bar-white');
+    const $evalBarText = document.getElementById('eval-bar-text');
+    const $arrow = document.getElementById('best-move-arrow');
+
+    // === Inicializace chessboard.js =========================================
+    // draggable=true, onDrop handler validuje tah přes backend.
+    // pieceTheme stejné jako v pgn.html (jsdelivr GitHub mirror — npm package figury nemá).
+    const board = Chessboard('board', {
+        position: 'start',
+        draggable: true,
+        pieceTheme: 'https://cdn.jsdelivr.net/gh/oakmac/chessboardjs@1.0.0/website/img/chesspieces/wikipedia/{piece}.png',
+        // onDragStart: zakážeme drag pokud hra neběží / není hráčův tah / hra skončila.
+        onDragStart: (source, piece) => {
+            if (!state.gameStarted || state.gameOver) return false;
+            if (state.turn !== state.playerColor) return false;
+            // Hráč může chytat jen vlastní figury (piece = 'wP', 'bN', ...).
+            if (piece[0] !== state.playerColor) return false;
+        },
+        // onDrop: pošli tah backendu. Pokud invalid, vrať figuru ('snapback').
+        onDrop: handleDrop,
+    });
+
+    // === Settings UI bindings ===============================================
+    // Slider skill: aktualizuje label + default think time (pokud user nemoduloval).
+    $skill.addEventListener('input', () => {
+        const skill = parseInt($skill.value, 10);
+        $skillVal.textContent = skill;
+        // Auto-update think time podle nového skill (resetuje případný override).
+        const dt = defaultThinkTime(skill);
+        $thinkTime.value = dt;
+        $thinkTimeVal.textContent = dt.toFixed(2);
+    });
+    // Slider think time: jen label.
+    $thinkTime.addEventListener('input', () => {
+        $thinkTimeVal.textContent = parseFloat($thinkTime.value).toFixed(2);
+    });
+    // True pokud aspoň jeden hint je zapnutý — pak má smysl fetchnout eval.
+    function evalNeeded() {
+        return $showEval.checked || $showRecommended.checked;
+    }
+
+    // Show eval toggle: jen eval bar (kdo má výhodu). Šipka má vlastní toggle.
+    $showEval.addEventListener('change', () => {
+        if ($showEval.checked) {
+            $evalBar.classList.remove('hidden');
+            // Pokud běží hra a šipka nebyla už ON (= eval cache neexistuje),
+            // fetchni nová data. fetchEval respektuje oba toggly v render fázi.
+            if (state.gameStarted && state.currentFen) fetchEval(state.currentFen);
+        } else {
+            $evalBar.classList.add('hidden');
+            // Reset eval baru na 50/50 (jen kosmetika, je skrytý).
+            $evalBarWhite.style.height = '50%';
+            $evalBarText.textContent = '?';
+            $evalBarText.className = 'eval-bar-text';
+            // Pokud už ani šipka nefrčí, zruš pending fetch — zbytečný.
+            if (!evalNeeded()) abortPendingEval();
+        }
+    });
+
+    // Recommended move toggle: jen zelená šipka best move od enginu.
+    $showRecommended.addEventListener('change', () => {
+        if ($showRecommended.checked) {
+            if (state.gameStarted && state.currentFen) fetchEval(state.currentFen);
+        } else {
+            clearArrow();
+            if (!evalNeeded()) abortPendingEval();
+        }
+    });
+
+    function abortPendingEval() {
+        if (state.analysisAbort) {
+            state.analysisAbort.abort();
+            state.analysisAbort = null;
+        }
+    }
+
+    // Inicializace value labelu a slideru pro think time (odvozeno ze skill default).
+    $skill.dispatchEvent(new Event('input'));
+
+    // === Akční tlačítka =====================================================
+    $newGameBtn.addEventListener('click', startGame);
+    $undoBtn.addEventListener('click', undo);
+    $resignBtn.addEventListener('click', resign);
+    $analyseGameBtn.addEventListener('click', openGameAnalysis);
+
+    // === Backend volání =====================================================
+    async function startGame() {
+        const color = document.querySelector('input[name="color"]:checked').value;
+        const skill = parseInt($skill.value, 10);
+        const thinkTime = parseFloat($thinkTime.value);
+
+        hideError();
+        $newGameBtn.disabled = true;
+        try {
+            const resp = await fetch('/api/play/start', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({color, skill, think_time: thinkTime}),
+            });
+            if (!resp.ok) { await showFetchError(resp); return; }
+            const data = await resp.json();
+            state.gameStarted = true;
+            state.playerColor = color;
+            // Orientace boardu = hráčova barva (chessboard.js bere 'white' / 'black').
+            board.orientation(color === 'w' ? 'white' : 'black');
+            applyResponse(data);
+        } catch (e) {
+            showError('Chyba startu hry: ' + e.message);
+        } finally {
+            $newGameBtn.disabled = false;
+        }
+    }
+
+    // onDrop callback chessboard.js — vrať 'snapback' pro invalid tah.
+    async function handleDrop(source, target) {
+        // Kliknutí mimo board → source === target → ignoruj.
+        if (source === target) return 'snapback';
+        // Optimisticky pošli tah; pokud backend řekne ne, snapback nastane post-fakt
+        // (chessboard.js mezitím už figuru přesunul). Vrátíme 'snapback' jen
+        // při instant-validation (tady nemáme), takže standardně necháme přesun
+        // proběhnout a v případě chyby přerenderujeme z FEN.
+        hideError();
+        try {
+            const resp = await fetch('/api/play/move', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({from: source, to: target}),
+            });
+            if (!resp.ok) {
+                await showFetchError(resp);
+                // Vrať figuru — backend odmítl tah, board se vrátí na předchozí FEN.
+                board.position(state.currentFen);
+                return;
+            }
+            const data = await resp.json();
+            applyResponse(data);
+        } catch (e) {
+            showError('Chyba odeslání tahu: ' + e.message);
+            board.position(state.currentFen);
+        }
+    }
+
+    async function undo() {
+        hideError();
+        $undoBtn.disabled = true;
+        try {
+            const resp = await fetch('/api/play/undo', {method: 'POST'});
+            if (!resp.ok) { await showFetchError(resp); return; }
+            const data = await resp.json();
+            applyResponse(data);
+        } catch (e) {
+            showError('Chyba undo: ' + e.message);
+        }
+        // $undoBtn re-enable řeší applyResponse podle can_undo.
+    }
+
+    // Po skončení hry: stáhne PGN, předá ho do /pgn přes localStorage, otevře nový tab.
+    // /pgn na load detekuje pending PGN, naplní textarea a auto-spustí analýzu celé partie.
+    async function openGameAnalysis() {
+        try {
+            const resp = await fetch('/api/play/pgn');
+            if (!resp.ok) { await showFetchError(resp); return; }
+            const pgnText = await resp.text();
+            // localStorage = cross-tab persistent storage. Klíč prefixujeme "chesslab-"
+            // aby nedošlo ke kolizi s jinými apps.
+            localStorage.setItem('chesslab-pending-pgn', pgnText);
+            // Nový tab — uživatel může pokračovat ve hře / spustit novou.
+            window.open('/pgn', '_blank');
+        } catch (e) {
+            showError('Chyba otevření analýzy: ' + e.message);
+        }
+    }
+
+    async function resign() {
+        if (!confirm('Opravdu vzdát partii?')) return;
+        hideError();
+        $resignBtn.disabled = true;
+        try {
+            const resp = await fetch('/api/play/resign', {method: 'POST'});
+            if (!resp.ok) { await showFetchError(resp); return; }
+            const data = await resp.json();
+            applyResponse(data);
+        } catch (e) {
+            showError('Chyba resign: ' + e.message);
+        }
+    }
+
+    // === Aplikace odpovědi serveru ==========================================
+    // Single source of truth — všechny endpointy vrací PlayStateResponse,
+    // tahle funkce updatuje veškeré UI.
+    function applyResponse(data) {
+        state.currentFen = data.fen;
+        state.turn = data.turn;
+        state.gameOver = data.game_over;
+        state.playerColor = data.player_color;
+
+        // Board update — two-phase animace pro rošádu / en passant / promoci.
+        // chessboard.js v onDrop ví jen o pohybu jedné figury (král, pěšec),
+        // o "skrytém" pohybu věže / vzatém pěšci e.p. / transformaci nemá tušení.
+        // Když rovnou skočíme na finální FEN (po engine reakci), chessboard.js
+        // animuje skrytý pohyb společně s engine tahem → vizuálně rozhozené.
+        // Řešení: nejdřív animuj na mezistav po hráčově tahu, pak na finál.
+        if (data.fen_after_player_move && data.fen_after_player_move !== data.fen) {
+            board.position(data.fen_after_player_move);
+            // Default chessboard.js moveSpeed = 200ms. 250ms = mírná rezerva.
+            setTimeout(() => board.position(data.fen), 250);
+        } else {
+            board.position(data.fen);
+        }
+
+        // Status text + classy podle stavu.
+        $status.textContent = data.status;
+        $status.className = 'status';
+        if (data.game_over) $status.classList.add('game-over');
+        else if (data.turn !== data.player_color) $status.classList.add('thinking');
+
+        // Poslední tah(y) — pro UI feedback "co se právě stalo".
+        const parts = [];
+        if (data.last_player_move) parts.push('Ty: ' + data.last_player_move.san);
+        if (data.last_engine_move) parts.push('Stockfish: ' + data.last_engine_move.san);
+        $lastMove.textContent = parts.join(' · ');
+
+        // PGN tahy v sidebaru.
+        renderMoves(data.pgn);
+
+        // Tlačítka — enable podle stavu.
+        $undoBtn.disabled = !data.can_undo;
+        $resignBtn.disabled = data.game_over;
+        // "Analyzovat partii" má smysl až když je hra dohraná (analýza celé partie).
+        $analyseGameBtn.disabled = !data.game_over;
+        // Download je dostupný kdykoliv hra běží (i po skončení).
+        $downloadBtn.classList.toggle('disabled', !state.gameStarted);
+
+        // Highlight posledního tahu enginu (obvyklý chess-UI feedback).
+        // Po hráčově tahu necháváme jen engine move highlighted — hráč svůj tah
+        // viděl při dragu, engine reakci potřebuje vizuálně zachytit.
+        if (data.last_engine_move) {
+            highlightLastMove(data.last_engine_move.uci);
+        } else {
+            clearLastMoveHighlight();
+        }
+
+        // Hints (eval bar / šipka) — fetchni jen pokud aspoň jeden hint je ON.
+        if (evalNeeded() && !data.game_over) {
+            fetchEval(data.fen);
+        } else {
+            // Po skončení hry / zhasnutých checkboxech šipka pryč.
+            clearArrow();
+        }
+    }
+
+    // === Highlight posledního tahu =========================================
+    // Přidá třídu .highlight-last na from + to pole (CSS box-shadow tint).
+    // Volá se po každém applyResponse, kde existuje last_engine_move.
+    function highlightLastMove(uci) {
+        clearLastMoveHighlight();
+        if (!uci || uci.length < 4) return;
+        const from = uci.substring(0, 2);
+        const to = uci.substring(2, 4);
+        const $from = document.querySelector('#board .square-' + from);
+        const $to = document.querySelector('#board .square-' + to);
+        if ($from) $from.classList.add('highlight-last');
+        if ($to) $to.classList.add('highlight-last');
+    }
+
+    function clearLastMoveHighlight() {
+        document.querySelectorAll('#board .highlight-last').forEach(
+            (el) => el.classList.remove('highlight-last')
+        );
+    }
+
+    function renderMoves(pgn) {
+        if (!pgn) {
+            $moves.innerHTML = '<span class="empty">(žádné tahy)</span>';
+            return;
+        }
+        // PGN tahy z backendu jsou typicky "1. e4 e5 2. Nf3 Nc6 ..."
+        // Render jen jako monospace text — žádné klikací tahy (single game je sync s boardem).
+        // Lehký HTML render: parse na "číslo. tah tah" segmenty, číslo zvýraznit šedě.
+        // Pro KISS: jen escapeHtml a vykresli jako preserve-text uvnitř div.
+        $moves.textContent = pgn;
+        // Auto-scroll na konec (vidět poslední tah).
+        $moves.scrollTop = $moves.scrollHeight;
+    }
+
+    // === Show eval (volá existující /api/engine/analyse) ===================
+    async function fetchEval(fen) {
+        // Zruš případný předchozí fetch (rychlé tahy se nesmí přeplnit).
+        if (state.analysisAbort) state.analysisAbort.abort();
+        const myAbort = new AbortController();
+        state.analysisAbort = myAbort;
+
+        try {
+            const resp = await fetch('/api/engine/analyse', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({fen, time: 0.5}),
+                signal: myAbort.signal,
+            });
+            if (!resp.ok) return;  // tichý fail — eval je nice-to-have
+            const r = await resp.json();
+            // Render selektivně podle toggles (uživatel mohl mezitím přepnout).
+            if ($showEval.checked) updateEvalBar(r.score_cp, r.mate_in);
+            if ($showRecommended.checked) drawArrow(r.best_move_uci);
+            else clearArrow();
+        } catch (e) {
+            // AbortError = uživatel klikl dál; ignoruj.
+            if (e.name === 'AbortError') return;
+            // Jinak tichý fail.
+        } finally {
+            if (state.analysisAbort === myAbort) state.analysisAbort = null;
+        }
+    }
+
+    // === Eval bar + šipka (kopie logiky z pgn.html) ========================
+    function scoreToWhitePct(scoreCp, mateIn) {
+        if (mateIn !== null && mateIn !== undefined) {
+            return mateIn > 0 ? 100 : 0;
+        }
+        if (scoreCp === null || scoreCp === undefined) return 50;
+        const clamped = Math.max(-1000, Math.min(1000, scoreCp));
+        return 50 + clamped / 20;
+    }
+
+    function formatScoreShort(scoreCp, mateIn) {
+        if (mateIn !== null && mateIn !== undefined) {
+            return (mateIn > 0 ? '+' : '-') + 'M' + Math.abs(mateIn);
+        }
+        if (scoreCp === null || scoreCp === undefined) return '?';
+        const v = scoreCp / 100;
+        return (v >= 0 ? '+' : '') + v.toFixed(1);
+    }
+
+    function updateEvalBar(scoreCp, mateIn) {
+        const pct = scoreToWhitePct(scoreCp, mateIn);
+        $evalBarWhite.style.height = pct + '%';
+        $evalBarText.textContent = formatScoreShort(scoreCp, mateIn);
+        $evalBarText.className = 'eval-bar-text ' + (pct >= 50 ? 'white' : 'black');
+    }
+
+    // Mapování pole na pixely v overlay (kopie z pgn.html — robustní k border).
+    function squareToPixel(square) {
+        const $sq = document.querySelector('#board .square-' + square);
+        if (!$sq) return null;
+        const sqRect = $sq.getBoundingClientRect();
+        const ovRect = document.getElementById('arrow-overlay').getBoundingClientRect();
+        return {
+            x: sqRect.left - ovRect.left + sqRect.width / 2,
+            y: sqRect.top - ovRect.top + sqRect.height / 2,
+        };
+    }
+
+    function drawArrow(uci) {
+        if (!uci || uci.length < 4) { clearArrow(); return; }
+        const from = squareToPixel(uci.substring(0, 2));
+        const to = squareToPixel(uci.substring(2, 4));
+        if (!from || !to) { clearArrow(); return; }
+        $arrow.setAttribute('x1', from.x);
+        $arrow.setAttribute('y1', from.y);
+        $arrow.setAttribute('x2', to.x);
+        $arrow.setAttribute('y2', to.y);
+        $arrow.setAttribute('opacity', '0.7');
+    }
+
+    function clearArrow() {
+        $arrow.setAttribute('opacity', '0');
+    }
+
+    // === Error UI ==========================================================
+    function showError(msg) {
+        $error.textContent = msg;
+        $error.style.display = 'block';
+    }
+    function hideError() {
+        $error.style.display = 'none';
+    }
+    async function showFetchError(resp) {
+        const err = await resp.json().catch(() => ({}));
+        const msg = typeof err.detail === 'string'
+            ? err.detail
+            : 'Chyba ' + resp.status;
+        showError(msg);
+    }
+</script>
+{% endblock %}

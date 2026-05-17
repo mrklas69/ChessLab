@@ -862,5 +862,23 @@ button:disabled, button:disabled:hover {
             loadPGN();
         }
     });
+
+    // === Pending PGN handoff z /play =======================================
+    // Po skončení hry v /play uživatel klikne "Analyzovat partii" → PGN se uloží
+    // do localStorage a otevře se /pgn v novém tabu. Tady ho přečteme, naplníme
+    // textarea, naloadujeme a hned spustíme analýzu celé partie.
+    (async () => {
+        const pendingPgn = localStorage.getItem('chesslab-pending-pgn');
+        if (!pendingPgn) return;
+        // Smažeme klíč hned, ať se to nespustí znovu při dalším refreshi.
+        localStorage.removeItem('chesslab-pending-pgn');
+        $input.value = pendingPgn;
+        await loadPGN();
+        // Pokud se PGN naparsoval úspěšně (state.game) a tlačítko je enabled,
+        // spustíme analýzu celé partie automaticky — to byl důvod handoffu.
+        if (state.game && !$analyseGameBtn.disabled) {
+            analyseGame();
+        }
+    })();
 </script>
 {% endblock %}

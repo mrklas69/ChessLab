@@ -2,14 +2,29 @@
 
 from pathlib import Path
 
+import chess
+
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 from chesslab import __version__
 from chesslab.engine import EngineAnalysis, PositionEval, analyse_fen, analyse_game_fens
 from chesslab.pgn import PgnGame, parse_pgn
+from chesslab.play import (
+    SKILL_DEFAULT,
+    SKILL_MAX,
+    SKILL_MIN,
+    THINK_TIME_MAX,
+    THINK_TIME_MIN,
+    PlayStateResponse,
+    apply_player_move,
+    get_pgn_download,
+    resign_game,
+    start_game,
+    undo_last_move,
+)
 
 # FastAPI instance — to je hlavní objekt, který uvicorn umí spustit.
 # title se zobrazí v /docs (auto-generated OpenAPI dokumentace).
@@ -36,6 +51,23 @@ def index(request: Request) -> HTMLResponse:
 def pgn_viewer(request: Request) -> HTMLResponse:
     """PGN viewer — šachovnice + textarea + move list (zatím bez JS glue)."""
     return templates.TemplateResponse(request=request, name="pgn.html")
+
+
+@app.get("/play", response_class=HTMLResponse)
+def play_page(request: Request) -> HTMLResponse:
+    """Herní stránka — hraní proti Stockfish (drag-and-drop, settings sidebar)."""
+    return templates.TemplateResponse(
+        request=request,
+        name="play.html",
+        context={
+            # Defaults pro <input> elementy v template — single source of truth.
+            "skill_min": SKILL_MIN,
+            "skill_max": SKILL_MAX,
+            "skill_default": SKILL_DEFAULT,
+            "think_time_min": THINK_TIME_MIN,
+            "think_time_max": THINK_TIME_MAX,
+        },
+    )
 
 
 @app.get("/health")
@@ -148,4 +180,119 @@ def api_engine_analyse_game(req: EngineAnalyseGameRequest) -> EngineAnalyseGameR
         evals=evals,
         time_per_move=req.time_per_move,
         total_time=_time.monotonic() - started,
+    )
+
+
+# === Play API ================================================================
+
+
+class PlayStartRequest(BaseModel):
+    """Vstupní payload pro /api/play/start — start nové hry proti Stockfish."""
+
+    color: str = Field(
+        ...,
+        description="Barva hráče: 'w' (bílý, hraje první) nebo 'b' (černý, engine táhne první).",
+        pattern="^[wb]$",
+    )
+    skill: int = Field(
+        SKILL_DEFAULT,
+        description=f"Stockfish Skill Level ({SKILL_MIN}–{SKILL_MAX}).",
+        ge=SKILL_MIN,
+        le=SKILL_MAX,
+    )
+    think_time: float = Field(
+        ...,
+        description=f"Budget enginu na tah v sekundách ({THINK_TIME_MIN}–{THINK_TIME_MAX}).",
+        ge=THINK_TIME_MIN,
+        le=THINK_TIME_MAX,
+    )
+
+
+class PlayMoveRequest(BaseModel):
+    """Vstupní payload pro /api/play/move — hráčův tah ve formě from/to (chessboard.js onDrop)."""
+
+    from_sq: str = Field(
+        ...,
+        description="Výchozí pole, např. 'e2'.",
+        # alias 'from' — 'from' je Python keyword, nelze použít jako název atributu.
+        alias="from",
+        pattern="^[a-h][1-8]$",
+    )
+    to_sq: str = Field(
+        ...,
+        description="Cílové pole, např. 'e4'.",
+        alias="to",
+        pattern="^[a-h][1-8]$",
+    )
+
+    # populate_by_name=True dovolí FastAPI číst payload jako {"from": "...", "to": "..."}
+    # (klient posílá), a zároveň atribut na Python straně se jmenuje from_sq.
+    model_config = {"populate_by_name": True}
+
+
+@app.post("/api/play/start", response_model=PlayStateResponse)
+def api_play_start(req: PlayStartRequest) -> PlayStateResponse:
+    """Start nové hry proti Stockfish. Restartuje engine, resetuje board.
+
+    Pokud hraje hráč za černého, engine táhne hned (last_engine_move v odpovědi).
+    """
+    color = chess.WHITE if req.color == "w" else chess.BLACK
+    try:
+        return start_game(color=color, skill=req.skill, think_time=req.think_time)
+    except FileNotFoundError as exc:
+        # Chybějící Stockfish binárka — server-side config problém.
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/play/move", response_model=PlayStateResponse)
+def api_play_move(req: PlayMoveRequest) -> PlayStateResponse:
+    """Hráč táhne (from/to), engine automaticky reaguje, pokud hra běží dál.
+
+    Vrací stav s oběma tahy (last_player_move + last_engine_move),
+    nebo jen hráčův tah, pokud po něm skončila hra (mat).
+    """
+    try:
+        return apply_player_move(req.from_sq, req.to_sq)
+    except ValueError as exc:
+        # Neplatný tah, není tvůj tah, hra skončila, engine nepřipraven — vše 400.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/play/undo", response_model=PlayStateResponse)
+def api_play_undo() -> PlayStateResponse:
+    """Vrátí poslední hráčův + engine tah (pop 2 plies), hráč je zase na tahu.
+
+    Funguje i po resign / matu — vrátí flag a vrátí pozici před koncem.
+    """
+    try:
+        return undo_last_move()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/play/resign", response_model=PlayStateResponse)
+def api_play_resign() -> PlayStateResponse:
+    """Hráč se vzdal. Vrátí finální stav s game_over=true a result podle barvy."""
+    try:
+        return resign_game()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/play/pgn")
+def api_play_pgn() -> Response:
+    """Stáhne PGN aktuální hry se Seven Tag Roster.
+
+    Content-Disposition: attachment donutí browser stáhnout soubor.
+    Funguje i pro rozjetou hru (Result="*") i po skončení/rezignaci.
+    """
+    try:
+        pgn = get_pgn_download()
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    return Response(
+        content=pgn,
+        media_type="application/x-chess-pgn; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="game.pgn"'},
     )

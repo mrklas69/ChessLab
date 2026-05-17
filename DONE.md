@@ -2,6 +2,14 @@
 
 Hotové úkoly. Nejnovější nahoře.
 
+## 2026-05-17 — Hraní proti Stockfish (`/play`)
+
+- **Backend** `src/chesslab/play.py` (nový modul) — `GameState` dataclass (board + persistent Stockfish + player_color + skill + think_time + resigned + Lock), modulový singleton, akce `start_game()` / `apply_player_move()` / `undo_last_move()` / `resign_game()` / `get_pgn_download()`. Persistent engine přes celou hru (spawn-per-tah = 100-200ms lag), `engine.configure({"Skill Level": N})`. Auto-promote na dámu (UCI fallback `+ 'q'`). PGN se Seven Tag Roster pro download.
+- **Endpointy** v `app.py`: `GET /play`, `POST /api/play/start` (color + skill + think_time, engine táhne první když hráč=černý), `POST /api/play/move` (from/to, validace + engine reakce sériově), `POST /api/play/undo` (pop 2 plies / 1 pokud jediný), `POST /api/play/resign`, `GET /api/play/pgn` (download). Pydantic modely s `from`/`to` aliasy (Python keyword).
+- **Frontend** `templates/play.html` — chessboard.js board (`onDragStart` zakáže drag mimo hráčův turn, `onDrop` validuje přes backend), settings panel (color radio + skill slider 0-20 + think_time slider 0.1-2.0s, auto-scaling `0.1 + skill × 0.045` default), sidebar (status, last_move, PGN list, akční tlačítka). **Show eval** toggle (eval bar) a **Recommended move** toggle (zelená best-move šipka) — dva nezávislé checkboxy, fetch jen pokud aspoň jeden ON, render selektivně. **Highlight posledního engine tahu** lichess-style (box-shadow inset tint na from/to `.square-XX`). **„Analyzovat partii →"** tlačítko enabled po game_over → uloží PGN do `localStorage['chesslab-pending-pgn']` → otevře `/pgn` v novém tabu. `/pgn` na load přečte storage, naplní textarea, trigger `loadPGN()` + `analyseGame()`.
+- **Two-phase animace** pro rošádu / en passant / promoci — backend vrací `fen_after_player_move`, klient animuje 1) na mezistav, 2) po 250ms na finál (po engine reakci). chessboard.js v `onDrop` vidí jen pohyb krále/pěšce, o věži/vzatém pěšci e.p. neví → bez tohoto fix se vše animuje současně s engine tahem.
+- **Index** updated — `/play` link v Features, removed z „Brzy přijde". README rozšířen.
+
 ## 2026-05-17 — Eval graf přes partii
 
 - **Backend** `POST /api/engine/analyse_game` — vstup list FEN, výstup list `{ply, score_cp, mate_in}` + `total_time`. **Persistent Stockfish** v rámci requestu (open 1×, sériová analýza N pozic, close) — pro 80 pozic řádově rychlejší než spawn-per-position. Default `time_per_move=0.3s` (limit 0.05–2.0), max 400 pozic.

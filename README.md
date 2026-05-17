@@ -16,6 +16,7 @@ Osobní šachová laboratoř — lokální Python aplikace s webovým UI, která
 - **PGN viewer** na `/pgn` — vlož PGN, prohlížej tahy (klávesy ←/→/Home/End, klik na tah, Ctrl+Enter = Load), šachovnice se synchronizuje.
 - **Stockfish analýza** v PGN vieweru — tlačítko spustí analýzu aktuální pozice (1s budget): eval v centipawnech / mate + best move + depth, **vertikální eval bar** vlevo od šachovnice, **best-move šipka** přímo na šachovnici, volitelný **Auto** režim (automatická analýza při každé změně tahu).
 - **Eval graf přes partii** — tlačítko „Analyzovat partii" pošle celou partii Stockfishi (0.3s/pozici, persistent engine). Výstup = SVG křivka pod layoutem, klik na bod = skok na pozici, červené body = blundery (drop > 1.5 pawn z pohledu hráče, který tahnul).
+- **Hra proti Stockfish** na `/play` — drag-and-drop, nastavitelný Skill Level (0-20), think time (default scaled), volba barvy, toggle „Show eval" (eval bar) a „Recommended move" (best-move šipka). Highlight posledního engine tahu. Undo (pop 2 plies), Resign, Download PGN. Po skončení hry tlačítko „Analyzovat partii" otevře nový tab s `/pgn` a auto-spustí analýzu (handoff přes localStorage).
 - **OpenAPI dokumentace** na `/docs`, health endpoint na `/health`.
 
 Roadmapa viz [TODO.md](TODO.md) a [IDEAS.md](IDEAS.md).
