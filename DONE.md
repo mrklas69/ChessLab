@@ -2,6 +2,84 @@
 
 Hotové úkoly. Nejnovější nahoře.
 
+## 2026-05-18 — Minimax v3.2: Killer Moves + History Heuristic (marginal +24 Elo, non-signif)
+
+**Cíl**: zlepšit ordering quiet (non-capture) moves nad MVV-LVA. PV/TT řeší prev best,
+MVV-LVA captures, ale quiet moves se sortují arbitrary. Killer + history dají quiet
+moves smysluplné pořadí → víc β-cutoffů → deeper search.
+
+### Implementace v3.2 (`minimax_engine.py`)
+
+**Killer moves**:
+- Per-ply tabulka `_killers[ply][0..1]` (preallocated list, 64 ply × 2 sloty).
+- Update na β-cutoff pro quiet moves: posun `[1] = [0]; [0] = move` s dedup check.
+- Ordering: killer slot 0, slot 1 PŘED ostatními quiet moves (po captures).
+
+**History heuristic**:
+- `_history: dict[(color, from_sq, to_sq)] -> int`.
+- Bump `+= depth²` na β-cutoff pro quiet moves.
+- Ordering quiet moves bez killers: sort descending by history score.
+
+**Move ordering finální** (`_order_moves_with_pv_killers_history`):
+1. PV move (z TT)
+2. Captures sorted MVV-LVA
+3. Killer moves (slot 0, slot 1)
+4. Quiet moves sorted descending by history
+
+**Plumbing oproti v3.1**:
+- `_negamax` dostává nový param `ply` (start root = 0, child = ply+1). Tracking
+  depth from root pro killer table indexing.
+- Cutoff update jen pro **quiet moves** — captures jsou už MVV-LVA-orderované,
+  killer/history by tam jen plnily tabulky bez gainu.
+- **Lifetime**: clear na začátku každého `choose_move` (per-search semantika).
+  TT zůstává persistent. ID iterace v rámci jednoho `choose_move` sdílí killer/history.
+
+**Snapshot v3.1** (`minimax_engine_v31.py` + `chesslab-minimax-v31` entry) jako baseline.
+
+### Smoke + tactical correctness
+
+- `scripts/smoke_test_v32.py`: 4 pozice (startup, mate-in-1, middlegame 100ms + 500ms). PASS.
+- `scripts/tactical_test_v32.py`: 3 pozice (scholar's mate, back-rank, free queen). PASS.
+- Killer/history neporušily správnost.
+
+### Sparring v3.2 vs v3.1 — 100 partií @ 0.10s
+
+`scripts/sparring_v32_vs_v31.py`. 61 min běh.
+
+| metrika | hodnota |
+|---|---|
+| W/L/D | 50 / 43 / 7 |
+| v3.2 score | 53.5 % |
+| Wilson 95 % CI | [43.8 %, 63.0 %] |
+| Elo point estimate | **+24 Elo** |
+| Elo 95 % CI | [−43, +92] |
+| 1-sided p-value | **0.267** (non-signif) |
+| Bayesian gap (z celé matrice) | **+24.6 Elo** (v3.2 1249.8 vs v3.1 1225.2) |
+
+**Trend pozitivní, ale statisticky slabý**. Pro decisive p < 0.05 při current 53.5%
+by bylo potřeba n ≥ 400 (~4 hodiny sparringu) — neefektivní investice.
+
+### Decision: akceptovat marginal +24, pokračovat na v3.3
+
+Důvod: Bayesian gap +24 Elo (z celé matrice) + point estimate +24 = konzistentní
+weak positive trend. Sedí v rangu literatury (+30-80 pro killer/history) na nižším
+konci. Killer/history v Pythonu pravděpodobně přinášejí menší effect než v compiled
+enginech — možná overhead z dict/list tracking eats část benefitu.
+
+ID engineering chapter pokračuje. Další v3.3 kandidáti:
+- **Aspiration windows** — úzké α-β okno kolem prev iter score, re-search při miss
+- **Mate-distance scoring** — `_MATE_SCORE - ply` (vyžaduje TT mate-distance adjust)
+- **Null move pruning** — heavy guns, riziko v zugzwang
+
+### Drobnosti
+
+- **Replace_all bug**: při kopírování `sparring_v31_vs_v28.py` → `sparring_v32_vs_v31.py`
+  Edit replace_all "v3.1"→"v3.2" rozhodil celý soubor (chained edits). Fix: Write
+  celý soubor čistě místo iterativních edits.
+- **`scripts/`** ponechány v repu (smoke_test_v32, tactical_test_v32, sparring_v32_vs_v31).
+
+---
+
 ## 2026-05-18 — Minimax v3.1: Transposition Table + PV move ordering (DECISIVE +56 Elo)
 
 **Cíl**: zodpovědět "umí ID v Pythonu vůbec gain?" Předchozí v3.0 ID-only sparring
