@@ -3,8 +3,12 @@
     "allow": [
       "Bash(git fetch *)",
       "Bash(uv run --directory \"C:\\Users\\mrkla\\source\\ChessLab\" chesslab)",
+      "Bash(awk *)",
       "PowerShell(Test-NetConnection *)",
-      "PowerShell(Get-NetTCPConnection *)"
+      "PowerShell(Get-NetTCPConnection *)",
+      "PowerShell(Get-ChildItem *)",
+      "PowerShell(Test-Path *)",
+      "PowerShell(Start-Sleep *)"
     ]
   }
 }
