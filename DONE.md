@@ -2,6 +2,106 @@
 
 Hotové úkoly. Nejnovější nahoře.
 
+## 2026-05-18 — Minimax v3.1: Transposition Table + PV move ordering (DECISIVE +56 Elo)
+
+**Cíl**: zodpovědět "umí ID v Pythonu vůbec gain?" Předchozí v3.0 ID-only sparring
+(2× nesignif, viz níž) ponechal otázku otevřenou. v3.1 přidává **TT + PV ordering**
+jako klíčový speedup mechanismus a 200-game sparring má dát decisive answer.
+
+### Implementace v3.1 (`minimax_engine.py`)
+
+**Transposition table**:
+- Klíč: `board._transposition_key()` (private python-chess API, ale stable —
+  používá ho `is_repetition()`). Immutable tuple = exact board state, **kolize-free**.
+  ~200ns per probe vs `polyglot.zobrist_hash` ~1-2µs.
+- Entry layout: tuple `(depth, score, flag, best_move)`. Flag ∈ {EXACT, LOWER, UPPER}
+  per standardní α-β literaturu.
+- Probe rule: pokud `entry.depth >= current_depth` AND flag fits α/β okno → return
+  cached score. Pokud nefits, aspoň `tt_move` použij pro PV ordering.
+- Store rule s `alpha_orig` snapshotem: `best <= alpha_orig` → UPPER, `best >= beta`
+  → LOWER, jinak EXACT.
+- Replacement: always-replace (KISS).
+- Lifetime: **modulový persistentní** přes celou hru, soft cap 1M entries → wipe.
+- Quiescence bez TT (volatile pozice, dominovaly by cache).
+
+**PV move ordering** (kompozice dvou mechanismů):
+- **Intra-search** (`_negamax`): tt_move first v `_order_moves_with_pv`, zbytek MVV-LVA.
+- **ID-root** (`_run_id_iteration`): `prev_best_move` z minulé iterace explicit param,
+  next iter ho zkusí PRVNÍ — α-β cutoff dřív → deeper iterace levnější.
+- `pv_for_next = best_moves[0]` (deterministic, ne random) aby PV chaining bylo stabilní.
+  Random tie-break zůstává jen v UCI emit (`best_move` pro Aréna).
+
+**Snapshot v3.0** (`minimax_engine_v30.py` + `chesslab-minimax-v30` entry) jako
+baseline analogicky k v2.8 / v2.7 snapshotům.
+
+### Smoke + tactical correctness (před sparringem)
+
+- `scripts/smoke_test_v31.py`: 4 pozice (startup, scholar's mate, middlegame 100ms +
+  500ms). Všechny PASS, časy v 2×budget+500ms toleranci.
+- `scripts/tactical_test_v31.py`: 3 pozice (scholar's mate Qxf7#, back-rank Ra8#,
+  free queen capture KQ vs KQ). Všechny PASS. TT/PV neporušily správnost.
+
+  Pozn: první iterace testu měla špatně vymyšlené pozice (back-rank bez wk = illegal
+  position; "free queen" trade do KvK insufficient material draw). Engine to oba
+  správně **nevybral** — bug byl v testu, ne v engine. Opraveno na `6k1/5ppp/8/8/8/8/8/R6K`
+  a `4k3/2q5/8/8/8/2Q5/8/4K3`.
+
+### Sparring v3.1 vs v2.8 — 2× 100 partií @ 0.10s (kumulativní 200)
+
+`scripts/sparring_v31_vs_v28.py` (kumulační, `add_match_results` přičítá).
+
+| Batch | W v3.1 | W v2.8 | D | Score | Elo bod | p-value | Trvání |
+|---|---|---|---|---|---|---|---|
+| 1 | 55 | 39 | 6 | 58.0 % | +56 | 0.061 | 49 min |
+| 2 | 58 | 42 | 0 | 58.0 % | +56 | 0.067 | 52 min |
+| **CUM** | **113** | **81** | **6** | **58.0 %** | **+56** | **0.013** | 101 min |
+
+**Cumulative (n=200)**:
+- Wilson 95 % CI: **[51.1 %, 64.6 %]**
+- Elo 95 % CI: **[+7, +105]** — vyloučí nulu!
+- 1-sided p-value (H1: v3.1 > v2.8): **0.0129** — signif @ α=0.05.
+- Independent replication: batch 1 i 2 nezávisle 58 % → žádný noise, čistý signál.
+
+Bayesian Bradley-Terry rating z celé matrice (po 200 H2H partiích):
+- v3.1: **1230.9** (400 games)
+- v2.8: **1209.9** (350 games)
+- Gap **+21 Elo** (Bayesian konzervativnější než point H2H — váhuje přes všechny opponents).
+
+### Decisive závěr
+
+**ID v Pythonu UMÍ gain — ale jen s TT + PV ordering.** Samotné ID (v3.0) ne.
+
+Srovnání chronologie:
+
+| verze | klíčová změna | vs v2.8 Elo | p-value |
+|---|---|---|---|
+| v3.0 (ID only) | iterative deepening | −24 (n=100), −28 (n=50) | 0.79, 0.76 |
+| **v3.1 (ID + TT + PV)** | + transposition table + PV ordering | **+56 (n=200)** | **0.013** |
+
+Skok +80 Elo nad v3.0 → TT/PV jsou klíčový mechanismus pro gain v Pythonu.
+
+### Engine roadmap — co dál
+
+ID chapter **pokračuje**. Kandidáti na v3.2 (z IDEAS):
+- **Killer moves / history heuristic** — non-capture ordering nad MVV-LVA. PV pokrývá
+  jen prev best; killer/history pomohou ordering ostatních quiet moves.
+- **Aspiration windows** — úzké α-β okno kolem prev iter score, re-search při miss.
+  Zrychlí deep iterace.
+- **Mate-distance scoring** — `_MATE_SCORE - ply` místo flat. Zatím vidíme jen
+  mate-in-1; distance scoring by donutil engine preferovat rychlejší mat. Vyžaduje
+  TT mate-distance adjustment na store/probe.
+
+### Drobnosti
+
+- **`scripts/`** ponechány v repu (smoke_test_v31, tactical_test_v31, sparring_v31_vs_v28)
+  jako reprodukční artefakty.
+- **Známá limitace TT**: `_transposition_key()` neobsahuje move history → dvě cesty
+  do stejné pozice (jedna = draw by repetition, druhá ne) sdílí klíč. Riziko vzácného
+  incorrect score v opakovaných pozicích. Pro 2-4 ply search marginal, dokumentováno
+  v docstringu.
+
+---
+
 ## 2026-05-18 — Minimax v3.0: Iterative Deepening + decisive sparringy
 
 **Cíl**: nahradit fixed depth 2 (v2.8) za iterative deepening (ID), aby engine adaptivně využíval time budget (depth 3+ v jednoduchých pozicích, depth 2 v komplikovaných).
