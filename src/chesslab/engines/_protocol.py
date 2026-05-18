@@ -2,13 +2,16 @@
 
 Každý ChessLab engine = subprocess komunikující přes UCI protokol. Většina
 boilerplate je všude stejná (handshake, parsing 'position', emisi 'bestmove')
-— vlastní engine se liší jen v `choose_move(board) -> Move | None` funkci.
+— vlastní engine se liší jen v `choose_move(board, time_ms) -> Move | None`
+funkci.
 
 Tenhle modul poskytuje:
   - `send_line()` — write to stdout s okamžitým flushem (UCI je line-based,
     jinak by buffering blokoval handshake).
   - `parse_position_command()` — z `position startpos|fen ... [moves ...]`
     sestaví chess.Board.
+  - `parse_go_time()` — z `go movetime <N>` / `go wtime <W> btime <B>` vrátí
+    rozpočet pro **side-to-move** v ms (None pokud bez limitu).
   - `run_uci_loop(name, author, choose_move)` — kompletní UCI smyčka.
     Engine modul = ~20 řádků wrapper kolem této funkce.
 
@@ -24,9 +27,21 @@ from typing import Callable
 
 import chess
 
-# Typový alias pro engine callback — bere aktuální board, vrátí vybraný tah
-# (nebo None pro pozici bez legálních tahů → engine pošle 'bestmove 0000').
-ChooseMoveFn = Callable[[chess.Board], chess.Move | None]
+# Typový alias pro engine callback — bere aktuální board + time_ms (rozpočet
+# na tah v milisekundách, None = bez limitu = engine si rozhodne sám). Vrátí
+# vybraný tah, nebo None pro pozici bez legálních tahů → engine pošle 'bestmove 0000'.
+#
+# **Backward compatibility**: starší enginy (random, greedy, minimax v2.x) měly
+# signaturu bez time_ms. Po přechodu na nový protokol musí všechny enginy
+# přijmout (a typicky ignorovat) time_ms param. Hloubkový search v3.0+ ho
+# používá pro iterative deepening.
+ChooseMoveFn = Callable[[chess.Board, int | None], chess.Move | None]
+
+# Heuristika pro `go wtime <W> btime <B>` (no explicit movetime): kolik z remaining
+# clock alokovat per move. Default 1/30 = předpokládáme zbývající ~30 tahů do
+# konce partie. Stockfish používá komplexnější (1/45 + bonuses), my KISS.
+# Pokud arena/play posílají movetime explicit, tahle heuristika se neuplatní.
+_TIME_FRACTION_PER_MOVE = 30
 
 
 def send_line(line: str) -> None:
@@ -82,20 +97,66 @@ def parse_position_command(args: list[str], current: chess.Board) -> chess.Board
     return new_board
 
 
+def parse_go_time(args: list[str], side_to_move: chess.Color) -> int | None:
+    """Z argumentů `go` extrahuje time budget na **side_to_move** v milisekundách.
+
+    UCI `go` má víc time variant:
+      - `go movetime <ms>` — explicitní rozpočet na tah (priorita).
+      - `go wtime <W> btime <B> [winc <Wi> binc <Bi>] [movestogo <M>]` — clock-style,
+        engine si time management dělá sám. KISS: budget = clock / 30.
+      - `go depth <N>`, `go nodes <N>`, `go infinite` — bez time limitu.
+      - `go` bez args — bez limitu (= vrať tah okamžitě).
+
+    Args:
+        args: token list bez vedoucího 'go' (např. ['movetime', '100']).
+        side_to_move: chess.WHITE nebo chess.BLACK — pro výběr wtime vs btime.
+
+    Returns:
+        int budget v ms, nebo None pokud bez time limitu (engine rozhodne sám).
+    """
+    # Helper: získej int hodnotu za keyword v args (None pokud chybí nebo parse fail).
+    def _int_after(keyword: str) -> int | None:
+        if keyword in args:
+            idx = args.index(keyword)
+            if idx + 1 < len(args):
+                try:
+                    return int(args[idx + 1])
+                except ValueError:
+                    return None
+        return None
+
+    # Movetime má prioritu — explicit per-move rozpočet.
+    movetime = _int_after("movetime")
+    if movetime is not None:
+        return movetime
+
+    # Clock-style: vyber správnou hodinu podle side-to-move.
+    clock_key = "wtime" if side_to_move == chess.WHITE else "btime"
+    clock = _int_after(clock_key)
+    if clock is not None and clock > 0:
+        # Increment (Fischer time) přidáme k rozpočtu, protože ho stejně dostaneme.
+        inc_key = "winc" if side_to_move == chess.WHITE else "binc"
+        inc = _int_after(inc_key) or 0
+        # KISS time management: clock/30 + increment. Movestogo by se hodilo
+        # zahrnout (clock / movestogo místo /30), ale arena/play typicky neposílají.
+        return max(1, clock // _TIME_FRACTION_PER_MOVE + inc)
+
+    # depth/nodes/infinite/empty → engine rozhodne sám (typicky vrátí okamžitě).
+    return None
+
+
 def run_uci_loop(name: str, author: str, choose_move: ChooseMoveFn) -> None:
     """Kompletní UCI smyčka — čte stdin po řádcích dokud nepřijde 'quit' (nebo EOF).
 
     Engine modul to volá v `main()`:
         run_uci_loop(name="ChessLab Foo v0", author="...", choose_move=_choose_move)
 
-    `choose_move` dostane aktuální board a vrátí jeden legální tah (nebo None,
-    pokud žádný neexistuje — pak engine pošle 'bestmove 0000').
+    `choose_move` dostane aktuální board + time_ms budget (None = bez limitu)
+    a vrátí jeden legální tah (nebo None, pokud žádný neexistuje — pak engine
+    pošle 'bestmove 0000').
 
     Stav drží jen v lokální proměnné `board` (žádná persistence mezi spuštěními
     — každé `position` command ji přepíše). Single-threaded, synchronní.
-
-    Všechny UCI parametry 'go' (depth, time, wtime, ...) ignorujeme — vlastní
-    enginy budou typicky vracet tah okamžitě nebo si time managují sami.
     """
     board = chess.Board()
 
@@ -125,8 +186,9 @@ def run_uci_loop(name: str, author: str, choose_move: ChooseMoveFn) -> None:
         elif cmd == "position":
             board = parse_position_command(args, board)
         elif cmd == "go":
-            # Všechny parametry ignorujeme. Volat engine callback.
-            move = choose_move(board)
+            # Parsuj time budget (movetime / wtime / btime / fallback None).
+            time_ms = parse_go_time(args, board.turn)
+            move = choose_move(board, time_ms)
             if move is None:
                 # Žádný legální tah → UCI 'null move' = '0000'. Defenzivní fallback,
                 # arena by 'go' na finální pozici neměla poslat.

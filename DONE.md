@@ -2,6 +2,89 @@
 
 Hotové úkoly. Nejnovější nahoře.
 
+## 2026-05-18 — Minimax v3.0: Iterative Deepening + decisive sparringy
+
+**Cíl**: nahradit fixed depth 2 (v2.8) za iterative deepening (ID), aby engine adaptivně využíval time budget (depth 3+ v jednoduchých pozicích, depth 2 v komplikovaných).
+
+### Předehra: 150-game decisive turnaj (reset DB)
+
+Před v3.0 jsme uzavřeli otázku "jak silný je v2.8" — sparring memory tvrdila "10 H2H nestačí, minimum 100+". Spustili jsme **full reset** DB ratings + matchups + **6-engine round-robin × 10 partií per pair × 0.10s/tah = 150 partií** (Random, Greedy, Minimax v2.7 snapshot, v2.8, Stockfish skill 5 anchor, Stockfish skill 10).
+
+Výsledné Bayesian Bradley-Terry ratingy (anchor SF5 = 1500):
+- Stockfish skill 10: **1745.6**
+- Stockfish skill 5: **1500.0** [anchor]
+- Minimax v2.8: **1207.0**
+- Minimax v2.7 (snapshot): **1126.3** (gap +81 Elo pro v2.8, H2H 7-3-0, nedecisive @ n=10)
+- Greedy v1: **824.7**
+- Random v0: **613.9**
+
+Klíčové: žádný ChessLab engine nedal SF5 jediný bod (gap v2.8 → SF5 = 293 Elo). Skript `scripts/full_tournament_v28.py`.
+
+### Architektura v3.0 (`minimax_engine.py` rewrite)
+
+**Dvoufázové ID** (klíčové!):
+
+- **Phase 1 — mandatory depths (1..2)**: VŽDY dokončit, **bez** time abortu. Garantuje v3.0 ≥ v2.8 baseline quality. Bez tohoto první implementace v 100ms v komplikovaných pozicích stíhala jen depth 1 (= de facto Greedy v1) → v3.0 propadala 1-98-1 vs v2.8 (-727 Elo, viz debug `scripts/debug_v30_timing.py`).
+- **Phase 2 — adaptive depths (3..MAX=8)**: ID s deadline, abort uprostřed iterace = použij best z předchozí dokončené.
+
+**Time management**:
+
+- `_NODES_PER_TIME_CHECK = 64` (bit-mask `& 0x3F`). Předchozí 1024 občas overrun >1s v komplikovaných pozicích → asyncio TimeoutError v klientu. 64 = max ~64ms overrun.
+- `_TIME_RESERVE_MS = 10` od deadline (UCI flush + arena pipe overhead).
+- Per-root-move time check v `_run_id_iteration` (defense in depth).
+- `_SearchTimeout` exception abort signal propaguje přes negamax/quiescence rekurzi.
+
+**Rozšíření `_protocol.py`**:
+
+- `parse_go_time(args, side_to_move)` — extrahuje `movetime` (priorita) nebo fallback `wtime/btime` (clock/30 + increment KISS heuristika).
+- `ChooseMoveFn` signature change na `Callable[[Board, int | None], Move | None]`.
+- Random, Greedy, v2.7, v2.8 snapshot enginy přijmou (a ignorují) `time_ms` param.
+
+**v2.8 snapshot** (`minimax_engine_v28.py` + `chesslab-minimax-v28` entry) jako baseline pro sparring proti v3.0. Stejný pattern jako v2.7 snapshot.
+
+### Sparring v3.0 vs v2.8 — 2 runy
+
+| # | Time/tah | Partií | v3.0 W | v2.8 W | D | v3.0 score | Elo point | 95% CI Elo | p-value |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | 0.10s | 100 | 44 | 51 | 5 | 46.5 % | **−24** | [−92, +43] | 0.79 |
+| 2 | 0.50s | 50 | 22 | 26 | 2 | 46.0 % | **−28** | [−123, +68] | 0.76 |
+
+**Decisive nález**: v3.0 ≈ v2.8. Větší čas (5×) **nezachránil** ID gain. Iterative deepening **bez TT a PV ordering v Pythonu nepřinese měřitelný gain nad fixed depth 2**.
+
+Důvody (hypotézy):
+
+1. Search overhead z ID infrastructure (~9 % per smoke test) eats případnou depth 3 advantage.
+2. Bez TT a PV ordering — alpha-beta cutoffs v depth 3 nejsou efektivní, re-počítá pozice.
+3. MVV-LVA v depth 2 už captures dobře oceňuje → depth 3 jen málo mění best move.
+
+### Drobnosti
+
+- **Bug fix v `recompute_bayesian_ratings`** (`ratings.py`): caller-passed `engine_display_names` mají precedenci nad stávajícím DB záznamem. Důvod: při bump verze enginu (v2.8 → v3.0 na stejném `engine_id`) caller chce přepsat staré jméno. Fallback chain: caller → DB → engine_id.
+- **Jednorázový DB update**: `chesslab-minimax` display_name přepsán z "Minimax v2.8" na "Minimax v3.0" (předchozí refit držel staré jméno kvůli bugu výše).
+- **`scripts/`** ponechány v repu (full_tournament_v28, sparring_v30_vs_v28, debug_v30_timing, smoke_test_v30) jako reprodukční artefakty.
+
+### v3.0 závěrečný rating
+
+Po 150-game turnaji + 150 H2H partií v3 vs v2.8:
+
+| Engine | Elo | Games |
+|---|---|---|
+| Stockfish skill 10 | 1727.2 | 50 |
+| Stockfish skill 5 | 1500.0 [anchor] | 50 |
+| v2.8 snapshot | 1251.4 | 150 |
+| **v3.0 (chesslab-minimax)** | **1227.1** | 200 |
+| v2.7 snapshot | 1158.3 | 50 |
+| Greedy v1 | 882.1 | 50 |
+| Random v0 | 685.9 | 50 |
+
+v3.0 ≈ v2.8 v Bayesian ratingu (gap ~24 Elo, CI překrývá nulu).
+
+### Příště
+
+v3.1 s **transposition table** (Zobrist hashing) + PV ordering — decisive answer pro "umí ID v Pythonu vůbec gain?". ~80 řádků, v IDEAS.md.
+
+---
+
 ## 2026-05-17 — Housekeeping: LICENSE (MIT), .env.example
 
 Drobnosti z TODO „Drobnosti":

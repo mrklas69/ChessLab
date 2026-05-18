@@ -106,7 +106,7 @@ def _evaluate_after_move(board: chess.Board, move: chess.Move, our_color: chess.
         board.pop()
 
 
-def choose_move(board: chess.Board) -> chess.Move | None:
+def choose_move(board: chess.Board, _time_ms: int | None = None) -> chess.Move | None:
     """Vybere tah s nejvyšším material balance po pushu. Random tie-break.
 
     Algoritmus:
@@ -115,6 +115,9 @@ def choose_move(board: chess.Board) -> chess.Move | None:
          má 20 stejně hodnocených tahů, všechny nic neberou ani neztrácí).
       3) Z best moves vyber random — bez tie-breaku by engine hrál vždy stejně
          a partie by se zacyklily v opakování (drawh by triple-repetition).
+
+    `_time_ms` je UCI time budget v ms (None = bez limitu). Greedy 1-ply
+    search trvá <1ms i v komplikované pozici → time limit nepotřebujeme.
 
     Vrací None pokud žádný legální tah neexistuje (mat/pat → arena by `go`
     neměla poslat, ale defenzivně).

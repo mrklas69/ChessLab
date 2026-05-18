@@ -197,7 +197,10 @@ def _negamax(board: chess.Board, depth: int, alpha: int, beta: int) -> int:
     return int(best)
 
 
-def choose_move(board: chess.Board) -> chess.Move | None:
+def choose_move(board: chess.Board, _time_ms: int | None = None) -> chess.Move | None:
+    # `_time_ms` UCI budget ignorován — fixed depth 2 search trvá pod 50ms i
+    # v komplikované pozici, daleko pod arena/play budgetem. Snapshot zachovává
+    # historické chování.
     legals = list(board.legal_moves)
     if not legals:
         return None

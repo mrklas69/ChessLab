@@ -581,13 +581,19 @@ def recompute_bayesian_ratings(
 
     # Persist do engine_ratings. Anchor flag zachováme (anchor zůstane anchor,
     # rating byl rescalován MM algoritmem na target).
+    #
+    # **Display name precedence**: caller-passed `engine_display_names` MÁ
+    # PŘEDNOST před stávajícím DB záznamem. Důvod: při bump verze enginu
+    # (např. v2.8 → v3.0 na stejném engine_id) caller chce přepsat staré
+    # jméno. Pokud caller display_name neposlal, fallback na DB (= zachovat
+    # historické), pak na engine_id (= safety net pro neznámé).
     display_names = engine_display_names or {}
     for engine_id, new_rating in new_ratings.items():
         current = get_rating(engine_id)
         is_anchor = current.is_anchor if current else (engine_id == ANCHOR_ENGINE_ID)
         display_name = (
-            (current.display_name if current else None)
-            or display_names.get(engine_id)
+            display_names.get(engine_id)
+            or (current.display_name if current else None)
             or engine_id
         )
         _upsert_rating(

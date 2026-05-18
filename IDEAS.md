@@ -10,7 +10,8 @@ Raw nápady / vize / nice-to-have. Z těchto vznikají úkoly do `TODO.md`, **ne
 - ~~**v2.6: Quiescence search + root search fix**~~ — **HOTOVO 2026-05-17**, viz DONE. Captures-only quiescence + hard depth cap 8 + fresh α/β v root searche. ≥ +636 Elo nad Greedy v1 (20-0-0 sweep), skok +120 Elo nad v2.5.
 - ~~**v2.7: Move ordering (MVV-LVA)**~~ — **HOTOVO 2026-05-17**, viz DONE. Captures seřazeny dle `victim*10 - aggressor`. Při fixní depth 2 sílu nezvedlo (20-0-0 sweep vs Greedy = stejný lower bound jako v2.6), je to stavební kámen pro depth 3 / iterative deepening.
 - ~~**v2.8: Checks v quiescence**~~ — **HOTOVO 2026-05-17**, viz DONE. Non-capture checks v non-check větvi quiescence, cap 2 plies (`_QUIESCENCE_MAX_CHECK_PLIES`). Bez SEE filtru (KISS). **Síla nejistá**: 2 sparringy à 20 partií dají protichůdné výsledky — @0.05s/tah +215 Elo, @0.15s/tah −35 Elo, CI se překrývají. Plausibilní: výhoda jen na krátkém time budgetu (main search nestihne hloub). Decisive test by chtěl 100+ partií.
-- **v3: Depth 3** — po implementaci move ordering. Vidíme my-opp-my = můžeme plánovat dvoutahové kombinace (např. fork přípravy). Bez move ordering by v Pythonu při 0.05s/tah neměl čas dohrát.
+- ~~**v3.0: Iterative deepening + soft time check**~~ — **HOTOVO 2026-05-18**, viz DONE. ID s mandatory depth 2 (garantuje v2.8 baseline) + adaptive depth 3+ s deadline. 2× sparring vs v2.8 (100 partií @ 0.10s, 50 partií @ 0.50s) — oba **nesignifikantní** (−24 a −28 Elo, CI překrývají nulu). **Insight**: ID bez TT/PV ordering v Pythonu nepřinese gain — overhead z infrastructure (~9 %) eats případný depth 3 advantage. Refactor je infrastructure pro v3.1+ s TT.
+- **v3.1: Transposition table (Zobrist hashing)** — `dict[zobrist_key, (depth, score, flag)]`. Re-use scores přes ID iterace + PV move ordering (best z předchozí iterace zkusit první). Typicky 30-50 % rychlejší search → reálná depth 3-4 v 100ms. ~80 řádků, kandidát na další engine sprint. **Decisive answer pro "umí ID v Pythonu vůbec gain?"**
 - ~~**Engine sparring** — turnaj N enginů, round-robin, ELO výpočet (Bayesian / linear regression).~~ **HOTOVO 2026-05-17**, viz DONE. Round-robin endpoint + Bradley-Terry MM s virtual draw prior + anchor rescale. Recompute z celé matchup matrice po každém turnaji.
 - ~~**Per-skill rating pro Stockfish v dropdownu**~~ — **HOTOVO 2026-05-17**, viz DONE. Frontend (`/play`, `/arena`) fetchne `/api/engines/ratings` paralelně s engine listem, postaví mapu `engine_id → rating`, hint `(~XXXX Elo)` vedle skill slideru pro skill-aware enginy. Bez extra endpointu (existující list všech ratingů stačí).
 - **Opening book** — DB otevírkové teorie (.bin Polyglot, nebo vlastní z partií).
@@ -42,6 +43,7 @@ Raw nápady / vize / nice-to-have. Z těchto vznikají úkoly do `TODO.md`, **ne
 - **Sjednocená DB partií** — tag-based filtry (otevírka, soupeř, výsledek, datum).
 - **PGN editor** — anotace + variace, export.
 - **Vlastní GM partie databáze** — Mega Database / TWIC import.
+- **Lichess OAuth** (Bearer token) — pro private/correspondence partie + 60 req/min místo 20. Currently low priority — žádná konkrétní bolest.
 
 ## Distribuce / komunita
 

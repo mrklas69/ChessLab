@@ -21,12 +21,15 @@ ENGINE_NAME = "ChessLab Random v0"
 ENGINE_AUTHOR = "Jan Mrklas"
 
 
-def choose_move(board: chess.Board) -> chess.Move | None:
+def choose_move(board: chess.Board, _time_ms: int | None = None) -> chess.Move | None:
     """Vybere náhodný legální tah. None pokud žádný neexistuje (mat/pat).
 
     random.choice() potřebuje sekvenci, ne generator → konverze na list.
     `legal_moves` je relativně levné (max ~218 tahů v běžné pozici, typicky
     20-40 v middlegame).
+
+    `_time_ms` je UCI time budget v ms (None = bez limitu). Random engine ho
+    ignoruje — vrátí tah okamžitě, daleko pod jakýmkoliv rozumným budgetem.
     """
     legals = list(board.legal_moves)
     if not legals:
