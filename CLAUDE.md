@@ -70,6 +70,7 @@ Server běží na `http://127.0.0.1:8765`. Override portu/hostu přes env `CHESS
 - KISS, DRY, Single Source of Truth.
 - **Žádný React/Vue**, dokud explicitně neschválíme — vanilla JS je default.
 - **Žádné mocky enginu** v testech — pouštět skutečný Stockfish (rychlý, lokální).
+- **Vlastní enginy: drž se principu, neoptimalizuj ELO za každou cenu.** Cílem je ELO/LOC při zachování zadání (Random, Greedy, Minimax, …). Před přidáním feature do enginu zkontroluj [ENGINES.md](ENGINES.md) — definuje *princip & strop* každého enginu a co spadá pod „nový engine" místo enhancementu.
 
 ## Workflow
 

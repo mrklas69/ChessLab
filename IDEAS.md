@@ -13,13 +13,15 @@ Raw nápady / vize / nice-to-have. Z těchto vznikají úkoly do `TODO.md`, **ne
 - ~~**v3.0: Iterative deepening + soft time check**~~ — **HOTOVO 2026-05-18**, viz DONE. ID s mandatory depth 2 (garantuje v2.8 baseline) + adaptive depth 3+ s deadline. 2× sparring vs v2.8 (100 partií @ 0.10s, 50 partií @ 0.50s) — oba **nesignifikantní** (−24 a −28 Elo, CI překrývají nulu). **Insight**: ID bez TT/PV ordering v Pythonu nepřinese gain — overhead z infrastructure (~9 %) eats případný depth 3 advantage. Refactor je infrastructure pro v3.1+ s TT.
 - ~~**v3.1: Transposition table + PV move ordering**~~ — **HOTOVO 2026-05-18**, viz DONE. Klíč `board._transposition_key()`, tuple entry `(depth, score, flag, best_move)`, modulový persistentní dict s soft cap 1M, PV ordering intra-search + ID-root chain. **Decisive +56 Elo nad v2.8** (200 partií, CI [+7, +105], p=0.013). Skok +80 Elo nad v3.0 → potvrzeno: ID v Pythonu **umí** gain, ale jen s TT + PV.
 - ~~**v3.2: Killer moves + history heuristic**~~ — **HOTOVO 2026-05-18**, viz DONE. `_killers[ply][0..1]` (preallocated 64×2), `_history` dict `(color,from,to)` += depth². Move ordering: PV → captures MVV-LVA → killers → quiets by history. Clear per `choose_move` (TT persistuje). **Marginal +24 Elo nad v3.1** (100 partií, CI [−43, +92], p=0.27, non-signif ale Bayesian gap konzistentní +24.6). Killer/history v Pythonu mají slabší effect než literatura (+30-80) — možná Python overhead z dict/list tracking eats část benefitu. Decision: akceptováno jako weak positive, pokračujeme.
-- **v3.3: Aspiration windows** — úzké α-β okno kolem prev iter score, re-search při miss. Zrychlí deep iterace o ~20 %. ~30 řádků. Standard pattern, nízká komplexita.
-- **v3.3 alt: Mate-distance scoring** — `_MATE_SCORE - ply` místo flat. Zatím engine vidí jen mate-in-1 (všechny mate scores jsou stejné). Distance scoring → preferuje rychlejší mat. Vyžaduje TT mate-distance adjustment na store/probe (komplikovanější než zní).
-- **v3.3 alt: Null move pruning** — heavy guns (skip move, ověř že eval drop > beta). Riziko zugzwang bugu, vyžaduje opatrné podmínky (žádný NMP v koncovce, žádný NMP v šachu).
+- **v3.3: Aspiration windows** *(Minimax-scoped)* — úzké α-β okno kolem prev iter score, re-search při miss. Zrychlí deep iterace o ~20 %. ~30 řádků. Standard pattern, nízká komplexita.
+- **v3.3 alt: Mate-distance scoring** *(Minimax-scoped)* — `_MATE_SCORE - ply` místo flat. Zatím engine vidí jen mate-in-1 (všechny mate scores jsou stejné). Distance scoring → preferuje rychlejší mat. Vyžaduje TT mate-distance adjustment na store/probe (komplikovanější než zní).
+- **v3.3 alt: Null move pruning** *(Minimax-scoped)* — heavy guns (skip move, ověř že eval drop > beta). Riziko zugzwang bugu, vyžaduje opatrné podmínky (žádný NMP v koncovce, žádný NMP v šachu).
+- **Eval HCE features** *(Minimax-scoped)* — PSQT (piece-square tables), mobility, king safety, pawn structure. Klasické hand-crafted eval. Bigger wins než move ordering tweaks per [[feedback-killer-history-weak-in-python]].
 - ~~**Engine sparring** — turnaj N enginů, round-robin, ELO výpočet (Bayesian / linear regression).~~ **HOTOVO 2026-05-17**, viz DONE. Round-robin endpoint + Bradley-Terry MM s virtual draw prior + anchor rescale. Recompute z celé matchup matrice po každém turnaji.
 - ~~**Per-skill rating pro Stockfish v dropdownu**~~ — **HOTOVO 2026-05-17**, viz DONE. Frontend (`/play`, `/arena`) fetchne `/api/engines/ratings` paralelně s engine listem, postaví mapu `engine_id → rating`, hint `(~XXXX Elo)` vedle skill slideru pro skill-aware enginy. Bez extra endpointu (existující list všech ratingů stačí).
-- **Opening book** — DB otevírkové teorie (.bin Polyglot, nebo vlastní z partií).
-- **NNUE eval** v Python implementaci (velmi ambiciózní, jen pokud Python výkon nebude blokátor).
+- **Opening book** *(nový engine — Booked v0, viz [ENGINES.md](ENGINES.md))* — DB otevírkové teorie (.bin Polyglot, nebo vlastní z partií). Wrapper, který v knize táhne dle teorie, mimo knihu deleguje na Minimax.
+- **NNUE eval** *(nový engine — NNUE v0, viz [ENGINES.md](ENGINES.md))* — neural net eval místo HCE. Search = Minimax-style negamax+α-β. Velmi ambiciózní, jen pokud Python výkon nebude blokátor.
+- **MCTS engine** *(nový engine — MCTS v0, viz [ENGINES.md](ENGINES.md))* — Monte-Carlo Tree Search s rollouty. Úplně jiný search než Minimax.
 - **Arena: live progress** — místo fake odhadu času streamovat per-game výsledky přes SSE. Pro N > 10 by user získal feedback dřív než po 60s.
 
 ## Analýza
@@ -27,7 +29,7 @@ Raw nápady / vize / nice-to-have. Z těchto vznikají úkoly do `TODO.md`, **ne
 - ~~**Klasifikace tahů** podle Stockfish: brilliant / great / good / inaccuracy / mistake / blunder (per chess.com / lichess).~~ **HOTOVO 2026-05-17**, viz DONE. Lazy on-demand klasifikace s lichess sigmoid + cache v `move_evals`, barevné tagy v /pgn vieweru. (Brilliant/great heuristika vynechána — vyžadovala by sacrifice/only-move detekci.)
 - ~~**Klikatelné klasifikační pilly + tagy v `/pgn`**~~ — **HOTOVO 2026-05-17**, viz DONE. Pilly v souhrnu (`20 nejlepší · 5 chyba`) klikatelné, klik = smart next výskyt po `state.ply` (wrap-around); tagy v move list (`?!`, `??`, `✓`) taky klikatelné = skok na konkrétní tah.
 - **Opening identification** — porovnání s ECO databází.
-- **Endgame tablebases** — Syzygy 6-figure pro perfektní analýzu koncovek.
+- **Endgame tablebases** — Syzygy 6-figure pro perfektní analýzu koncovek. Pro analýzu = addon ve `classifier.py`/Stockfish; pro vlastní engine = *nový engine — Tablebased v0, viz [ENGINES.md](ENGINES.md)* (wrapper kolem Minimax).
 - **Pattern recognition** — vidlice, špíz, vazba, mat v X tahů (taktická anotace).
 
 ## UI

@@ -62,9 +62,9 @@ v Pythonu uzavíráme a pivotujeme (NNUE / opening book / lepší eval).
   Kandidát na v3.2.
 
 Vše ostatní (eval, quiescence, MVV-LVA, endgame, time management) **1:1
-z v3.0** — viz minimax_engine_v30.py snapshot pro porovnání.
+z v3.0** (ID infrastructure mezi v2.8 a v3.1, snapshot smazán — historie v gitu).
 
-Random tie-break: stejně jako v2.x/v3.0.
+Random tie-break: stejně jako v2.x.
 """
 
 from __future__ import annotations

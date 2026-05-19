@@ -22,10 +22,12 @@ Osobní šachová laboratoř — lokální Python aplikace s webovým UI, která
 - **Import partií z Lichess + chess.com** na `/import` — stáhne public partie uživatele (bez OAuth, 1-500 partií/request, per-zdroj formulář). **Default inkrementální** (Lichess server-side `since=<ms>` filter; chess.com client-side filter `created_at > since` při čtení měsíčních archivů → early exit, jakmile narazí na starou partii); checkbox „Force full re-sync" pro repair. Idempotentní jako safety net (INSERT OR IGNORE). Uložení do SQLite `data/chesslab.db`. Měřeno: 500 chess.com partií ~10s (~50 p/s — měsíční batche jsou paradoxně rychlejší než Lichess single-stream).
 - **Browser stažených partií** na `/games` — tabulka s filtry (barva / výsledek / tempo), klik na řádek otevře partii v `/pgn` a auto-spustí Stockfish analýzu celé partie (+ automaticky načte cached klasifikaci tahů, pokud existuje).
 - **Klasifikace tahů** v `/pgn` (pro partie z DB) — tlačítko „Klasifikovat tahy" pošle celou partii Stockfishi a per ply klasifikuje (best ✓ / good / inaccuracy ?! / mistake ? / blunder ??) na základě **lichess-style sigmoid** (drop ve win % z pohledu táhnoucího hráče). Barevné tagy vedle každého tahu v move list + souhrn pillů (kolik z které kategorie). **Klikatelné pilly + tagy**: klik na pill `5 chyba` = smart next výskyt po aktuálním ply (wrap-around); klik na tag `??` = skok přímo na ten tah. Cache v SQLite (`move_evals` tabulka per game_id+ply) — opětovné otevření partie zobrazí tagy okamžitě.
-- **Vlastní enginy** — UCI binárky generované z `chesslab.engines.*` přes `uv sync`, auto-discovery v Play i Aréně, sdílená UCI smyčka (`engines/_protocol.py`). Discovery endpoint: `GET /api/engines/list`.
-    - **v0: Random Mover** (`.venv\Scripts\chesslab-random.exe`) — náhodný legální tah.
-    - **v1: Greedy Material** (`.venv\Scripts\chesslab-greedy.exe`) — 1-ply lookahead nad materiálem (Kaufman piece values + mate/stalemate/check bonusy). +300 Elo nad Random.
-    - **v2.7: Minimax + α-β + endgame heuristika + quiescence + MVV-LVA** (`.venv\Scripts\chesslab-minimax.exe`) — negamax depth 2 s alpha-beta, v listech **quiescence search** (pokračuje v capture sekvencích dokud nedojde k quiet pozici, řeší horizon effect typu Qd5 → Qa4+ → vynucený Qb5 → Bxb5+). Tahy seřazené přes **MVV-LVA** (Most Valuable Victim - Least Valuable Aggressor: PxQ před QxP) → α-β cutoff dřív. Eval = material + check bonus + endgame king-tropism. Root search fix (fresh α/β per top-level move pro exact tie-break score). **≥ +636 Elo nad Greedy v1** (20-0-0 sweep, lower bound). MVV-LVA při fixní depth 2 nezvedne sílu (oba sweep), je stavební kámen pro budoucí depth 3 / iterative deepening. Cap 8 plies v quiescence proti search explosion v capture-heavy pozicích.
+- **Vlastní enginy** — UCI binárky generované z `chesslab.engines.*` přes `uv sync`, auto-discovery v Play i Aréně, sdílená UCI smyčka (`engines/_protocol.py`). Discovery endpoint: `GET /api/engines/list`. Princip: každý engine reprezentuje konkrétní algoritmický stupeň, snapshoty drženy jako benchmark variant (ne mrtvá historie).
+    - **v0: Random Mover** (`chesslab-random`) — náhodný legální tah.
+    - **v1: Greedy Material** (`chesslab-greedy`) — 1-ply lookahead nad materiálem (Kaufman piece values + mate/stalemate/check bonusy). +300 Elo nad Random.
+    - **v3.2: Minimax — aktivní hlavní engine** (`chesslab-minimax`) — negamax + α-β + quiescence search (captures + non-capture checks, cap 8/2 plies) + endgame king-tropism eval + iterative deepening + transposition table + PV move ordering + killer moves + history heuristic. **+56 Elo decisive** nad v2.8 milestonem (z v3.1, n=200, p=0.013), v3.2 marginal +24 Elo nad v3.1.
+    - **v2.7: Minimax (snapshot)** (`chesslab-minimax-v27`) — textbook depth 2 + α-β + endgame eval + quiescence (captures) + MVV-LVA. ≥ +636 Elo nad Greedy (20-0-0 sweep, lower bound). Drženo jako *čistý minimax* benchmark.
+    - **v3.1: Minimax (snapshot)** (`chesslab-minimax-v31`) — v2.8 + iterative deepening + transposition table + PV move ordering. Drženo jako *decisive TT/PV milestone* benchmark před killer/history tweaky.
 - **OpenAPI dokumentace** na `/docs`, health endpoint na `/health`.
 
 Roadmapa viz [TODO.md](TODO.md) a [IDEAS.md](IDEAS.md).
@@ -65,4 +67,4 @@ Dev server s auto-reloadem se startuje stejným `uv run chesslab` (reload je zap
 
 ## Licence
 
-TBD.
+MIT — viz [LICENSE](LICENSE).

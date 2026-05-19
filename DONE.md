@@ -2,6 +2,81 @@
 
 Hotové úkoly. Nejnovější nahoře.
 
+## 2026-05-19 — Rekapitulace + úklid: definice principu enginů, smazání dead-end snapshotů
+
+**Cíl:** Po sérii engine experimentů (v2.7 → v3.2) udělat audit projektu a srovnat
+*„co máme vs. co chystáme"*. Při diskuzi vyplynul nový princip pro vývoj
+vlastních enginů → potřeba ukotvit do dokumentace.
+
+### Nový princip (uložen do memory)
+
+**Vlastní enginy musí zůstat věrné svému tématu/principu.** Cílem **NENÍ**
+maximalizovat ELO za každou cenu, ale **optimalizovat ELO / LOC při zachování
+zadání** (Random, Greedy, Minimax, …). Marginal Elo gain (např. +24 Elo
+z killer/history) nemusí stát za odklon od čisté implementace, pokud zaplatí
+komplexitou navíc. Snapshoty staré verze drž jako *benchmark variant principu*,
+ne jako mrtvou historii.
+
+Viz [[feedback-engine-principle-over-rating]].
+
+### ENGINES.md — charter principu & stropu (nový soubor)
+
+Trvalá reference pro vývoj enginů. Definuje pro každý engine:
+- **Princip** (1 věta — co engine reprezentuje algoritmicky).
+- **Strop** (co už není „on" — kdy je třeba vytvořit nový engine místo enhancementu).
+- **Pipeline budoucích enginů** (Booked v0, Tablebased v0, NNUE v0, MCTS v0)
+  — drift NNUE/MCTS/opening book dovnitř `minimax_engine.py` je zakázán.
+
+Projektový `CLAUDE.md` přidal odkaz v sekci „Konvence" → před přidáním feature
+do enginu zkontrolovat ENGINES.md.
+
+### Úklid enginů (varianta A — didakticky vybrané snapshoty)
+
+Smazány **dead-end snapshoty** (slabý výsledek, nereprezentují odlišný stupeň):
+- `minimax_engine_v28.py` (non-capture checks v quiescence, nejistá síla)
+- `minimax_engine_v30.py` (ID infrastructure, sám nepřinesl gain)
+
+Drženy **didakticky důležité snapshoty**:
+- v2.7 (`chesslab-minimax-v27`) — textbook depth-2 + α-β + MVV-LVA + quiescence.
+- v3.1 (`chesslab-minimax-v31`) — decisive TT/PV milestone (+56 Elo nad v2.8).
+- v3.2 (`chesslab-minimax` = aktivní hlavní engine).
+
+Smazáno 5 souvisejících scriptů (`debug_v30_timing`, `full_tournament_v28`,
+`smoke_test_v30`, `sparring_v30_vs_v28`, `sparring_v31_vs_v28`). Drženo aktivní
+sparring `sparring_v32_vs_v31` + smoke/tactical pro v31 i v32.
+
+Srovnáno: `pyproject.toml` (entry pointy v28/v30 odebrány), `engines/__init__.py`
+(`_KNOWN_ENGINES`: label `v3.0 → v3.2`, přidán `v31`, odebrán `v28`),
+`minimax_engine_v31.py` komentář (odkazoval na smazaný v30).
+
+### DB orphans (varianta C — nech být)
+
+`engine_ratings` a `engine_matchups` v SQLite drží historii pro smazané enginy
+(v28 mělo 350 partií sparringu — nejvíc ze všech). Pokud někdy obnovíme binárku
+přes `git checkout`, Bayesian refit ji napojí zpátky. UI tabulku to zatím zaplevelí —
+fix v `engines.html` (filtr na `list_available_engines`) přijde, až bude bolet.
+
+### Stale dokumentace srovnaná
+
+- `README.md`: licence `TBD → MIT`, sekce vlastních enginů přepsaná (aktivní v3.2
+  + 2 snapshoty + věta o principu místo zastaralého „v2.7 jako aktivní hlavní").
+- `IDEAS.md`: engine roadmap anotována tagy — *(Minimax-scoped)* pro aspiration
+  windows, mate-distance, null move, HCE eval; *(nový engine — viz ENGINES.md)*
+  pro opening book (Booked v0), NNUE (NNUE v0), MCTS (MCTS v0), Syzygy
+  (Tablebased v0).
+- Memory `project_chesslab.md` srovnán (drift v2.8/v3.0 snapshotů odstraněn).
+- `uv sync` regeneroval binárky, server restartován, `/api/engines/list` ověřen
+  (5 enginů + Stockfish).
+
+### Drobnosti
+
+- Server lock při `uv sync` — `chesslab.exe` byl držený běžícím serverem.
+  TaskStop background + sync + nový start vyřešilo. (Známé z dřívějška, ale
+  poprvé zaznamenáno v %END flow.)
+- `engines/__init__.py` mělo skrytý bug: `_KNOWN_ENGINES['chesslab-minimax']`
+  říkal label `v3.0`, přitom skutečnost už byla v3.2. Drift, který by se projevil
+  v UI dropdownu. Opraveno při tomto úklidu.
+
 ## 2026-05-18 — Minimax v3.2: Killer Moves + History Heuristic (marginal +24 Elo, non-signif)
 
 **Cíl**: zlepšit ordering quiet (non-capture) moves nad MVV-LVA. PV/TT řeší prev best,
