@@ -2,6 +2,82 @@
 
 Hotové úkoly. Nejnovější nahoře.
 
+## 2026-05-19 — Minimax v3.4: Mobility eval (+191 Elo, decisive)
+
+**Cíl**: další HCE eval feature po PSQT triumfu. Pseudo-legal mobility area
+(pro každou figuru spočítat počet polí, kam může táhnout). Defacto standardní
+Stockfish-inspired feature.
+
+### Implementace v3.4 (`minimax_engine.py`)
+
+**Mobility lookup**: `board.attacks_mask(sq)` vrací raw int bitboard
+pseudo-legal útoků (rychlejší než SquareSet wrapper). Filtr přes
+`& ~own_occupied` odstraní pole obsazená vlastními figurami. Popcount přes
+`int.bit_count()` (Python 3.10+ builtin, my Python 3.14).
+
+**Weights per piece type** (cp / legal target square):
+- PAWN: 0 — pawn mobility patří do pawn structure feature.
+- KNIGHT: 4 (max 8 squares → max 32 cp)
+- BISHOP: 3 (max ~14 squares → max ~42 cp)
+- ROOK: 2 (max ~14 squares → max ~28 cp)
+- QUEEN: 1 (max ~28 squares → max ~28 cp)
+- KING: 0 — king "mobility" v MG = exposure (king safety, jiná feature)
+
+Cíl weights: žádná figura nemá disproporčně velký maximální bonus (vše ~30-40 cp).
+
+**Single phase** (žádný MG/EG tapered) — KISS, mobility v MG i EG je
++/- stejně užitečná. Pokud sparring odhalí EG regrese, lze přidat tapered.
+
+**Integrace** v `_evaluate_for_side_to_move`: po `_material_plus_psqt`, před
+`_endgame_bonus`. Žádné změny v search loopu, TT, killer/history.
+
+**Snapshot v3.3** (`minimax_engine_v33.py` + `chesslab-minimax-v33` entry) jako
+baseline.
+
+### Smoke test
+
+- Startpos @ 200ms → bestmove `d2d4` (drift z `g1f3` v v3.3, oba textbook).
+- Endgame (rook + 3 pěšci) @ 200ms → bestmove `e1e8` (aktivní rook).
+- Po `1.e4 e5` @ 100ms → bestmove `d2d4` (drift z `g1f3`).
+
+Drobné drift mezi engine moves vs v3.3 = expected (eval shape se změnila).
+Žádný crash, sane tahy.
+
+### Sparring v3.4 vs v3.3 — 100 partií @ 0.10s
+
+Throw-away `C:\Users\mrkla\AppData\Local\Temp\sparring_v34_v33.py` (5×20 partií).
+Wall-clock cca 50 minut.
+
+| metrika | hodnota |
+|---|---|
+| W/D/L | 67 / 16 / 17 |
+| score | 75.0 % |
+| Elo diff | **+191** |
+| 95 % CI | **[+112, +269]** — decisive |
+| Per round score | 77.5, 82.5, 80, 70, 65 % (mírný pokles v posledních 2 rundách, ale stále >50 % everywhere) |
+
+**Decisive +191 Elo** — v rámci očekávaného rozsahu +100-200, méně než PSQT
++413 kvůli overlap (centrum dává jak PSQT bonus, tak víc moves). Více remíz
+(16 vs 5 z v3.3 sparringu) potvrzuje diminishing returns mezi překrývajícími
+se eval features.
+
+### Decision: keep v3.4, snapshot v3.3 zachován
+
+Snapshot v3.3 (PSQT only) drží jako pre-mobility baseline pro budoucí
+re-vyhodnocení (např. pokud bychom chtěli rollback k pure PSQT eval).
+
+**Pattern potvrzen** (per [[feedback-eval-features-huge-in-python]]): eval
+features v Pythonu mají velký effect, ale diminishing returns mezi překrývajícími
+se features. PSQT (centralization) + mobility (legal moves) sdílí signál
+"centrum = dobrá pozice" → druhá feature dá menší marginal gain.
+
+**Follow-up kandidáti**:
+- v3.5 king safety (pawn shield + attackers count) — orthogonal k PSQT/mobility,
+  očekáván +100-200 Elo (king safety řeší jiný aspekt než centralization).
+- v3.5 pawn structure (isolated/doubled/passed) — taky orthogonal, jednoduchá
+  impl.
+- Re-vyhodnotit `_endgame_bonus` (možná duplicate s eg king PSQT).
+
 ## 2026-05-19 — Minimax v3.3: PSQT tapered eval (+413 Elo, brutálně decisive)
 
 **Cíl**: rozšířit eval o klasickou textbook HCE feature — Piece-Square Tables.

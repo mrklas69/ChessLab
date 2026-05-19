@@ -1,48 +1,17 @@
-"""ChessLab Engine v3.4: PSQT + **Mobility eval (pseudo-legal)**.
+"""ChessLab Engine v3.3 (snapshot): ID + TT + PV + Killer/History + PSQT tapered eval (PeSTO).
 
-**Klíčová změna oproti v3.3**: rozšířena evaluation function o **mobility eval** —
-bonus za počet polí, kam každá figura může táhnout (pseudo-legal, ignoruje
-piny/check; search to vyřeší přesněji).
+**Zamražený snapshot v3.3** — slouží jako baseline pro sparring proti novějším
+verzím (v3.4+). Engine_id ``chesslab-minimax-v33`` v ratings DB drží historický
+rating; engine_id ``chesslab-minimax`` je vždy "current ChessLab minimax"
+(postupně přepisovaný novou verzí, aktuálně v3.4 s mobility eval).
 
-- **Implementace**: `board.attacks_mask(sq)` vrátí raw bitboard pseudo-legal
-  útoků, filtr přes `& ~own_occupied` odstraní pole obsazená vlastními figurami.
-  Popcount přes `int.bit_count()` (Python 3.10+, my Python 3.14).
-- **Weights per piece type** (cp / legal target square):
-  - PAWN: 0 (pawn mobility = jiná feature — pokrývá pawn structure)
-  - KNIGHT: 4 (max 8 squares × 4 = max 32 cp)
-  - BISHOP: 3 (max 14 squares × 3 = max 42 cp)
-  - ROOK: 2 (max 14 squares × 2 = max 28 cp)
-  - QUEEN: 1 (max 28 squares × 1 = max 28 cp)
-  - KING: 0 (king "mobility" v MG = exposure = jiná feature king safety)
-- **Single phase** (žádný MG/EG tapered) — KISS, mobility v MG i EG je
-  +/- stejně užitečná. Pokud sparring odhalí EG regrese, lze přidat tapered.
-
-**Cíl v3.4**: další HCE eval feature po PSQT triumfu. V Pythonu očekáváme
-+100-200 Elo nad v3.3 (méně než PSQT +413 kvůli částečnému overlap s PSQT —
-centrum dává jak PSQT bonus, tak víc moves). Per [[feedback-eval-features-huge-in-python]]
-eval features jsou v Pythonu bigger win než search tweaks.
-
-**Plumbing oproti v3.3**:
-- `_MOBILITY_WEIGHTS` konstanta + funkce `_mobility_score(board, our_color)`.
-- `_evaluate_for_side_to_move` volá `_mobility_score` po `_material_plus_psqt`.
-- Žádné změny v search loopu, TT, killer/history.
-
-**Vědomě skipnuto v v3.4** (kandidáti dál):
-- Tapered mobility (MG/EG fáze)
-- King safety eval (pawn shield + attackers count) — komplexnější, kandidát v3.5
-- Pawn structure (isolated/doubled/passed) — kandidát v3.5
-- Odstranění `_endgame_bonus` (duplicate s PSQT? Stále drženo z opatrnosti)
-- Aspiration windows / mate-distance / NMP (search tweaks odsunuto)
-
-Vše ostatní (search, quiescence, PSQT, TT, PV, killer/history, time management,
-endgame_bonus) **1:1 z v3.3** — viz minimax_engine_v33.py snapshot.
-
-Random tie-break: stejně jako v2.x/v3.x.
+Logika je 1:1 kopie ``minimax_engine.py`` ze stavu před v3.4 — viz git
+historie commitu, který tento snapshot vytvořil.
 
 ---
 
-**v3.3 retrospektiva** (zachováno pro kontext): rozšířena evaluation function
-o **PSQT (Piece-Square Tables) s tapered eval**:
+**Klíčová změna oproti v3.2**: rozšířena evaluation function o **PSQT (Piece-Square
+Tables) s tapered eval**:
 
 - **PeSTO tabulky**: 12 tabulek (6 piece types × 2 phases = midgame/endgame),
   hodnoty převzaty z Ronald Friederich's "PeSTO's Evaluation Function" (veřejné,
@@ -99,7 +68,7 @@ import chess
 
 from chesslab.engines._protocol import run_uci_loop
 
-ENGINE_NAME = "ChessLab Minimax v3.4"
+ENGINE_NAME = "ChessLab Minimax v3.3 (snapshot)"
 ENGINE_AUTHOR = "Jan Mrklas"
 
 # === ID + TIME MANAGEMENT (1:1 z v3.0/v3.1) ==================================
@@ -324,35 +293,6 @@ _PSQT_PHASE_WEIGHT: dict[chess.PieceType, int] = {
 }
 _PSQT_PHASE_MAX = 24
 
-# === MOBILITY EVAL (v3.4 nové) ===============================================
-#
-# Pseudo-legal mobility: pro každou figuru spočítáme počet polí, kam může táhnout
-# (= pseudo-legal target squares, mimo vlastní figury). Pin a check se ignorují
-# (search to vyřeší přesněji než eval). Defacto standardní HCE feature.
-#
-# Lookup: `board.attacks_mask(sq)` vrací raw int bitboard pseudo-legal útoků
-# (rychlejší než `board.attacks(sq)` který by konstruoval SquareSet wrapper).
-# Filtr přes `& ~own_occupied` odstraní vlastní figury (na ně nelze táhnout).
-# Popcount přes `int.bit_count()` (Python 3.10+ builtin, my Python 3.14).
-#
-# Weights per piece type (cp per legal target square):
-#   - PAWN: 0 — pěšcova mobilita patří do pawn structure feature
-#   - KNIGHT: 4 — max 8 squares → max 32 cp
-#   - BISHOP: 3 — max ~14 squares (open diagonal) → max ~42 cp
-#   - ROOK: 2 — max ~14 squares (open file+rank) → max ~28 cp
-#   - QUEEN: 1 — max ~28 squares → max ~28 cp
-#   - KING: 0 — king "mobility" v MG = exposure (king safety, jiná feature)
-# Cíl: žádná figura nemá disproporčně vysoký maximální bonus (vše ~30-40 cp).
-
-_MOBILITY_WEIGHTS: dict[chess.PieceType, int] = {
-    chess.PAWN:   0,
-    chess.KNIGHT: 4,
-    chess.BISHOP: 3,
-    chess.ROOK:   2,
-    chess.QUEEN:  1,
-    chess.KING:   0,
-}
-
 # === QUIESCENCE LIMITS (1:1 z v2.6/v2.8/v3.x) ================================
 
 _QUIESCENCE_MAX_PLIES = 8
@@ -539,56 +479,6 @@ def _material_plus_psqt(board: chess.Board, our_color: chess.Color) -> int:
     return (mg * phase + eg * (_PSQT_PHASE_MAX - phase)) // _PSQT_PHASE_MAX
 
 
-def _mobility_score(board: chess.Board, our_color: chess.Color) -> int:
-    """Mobility eval — Σ (weight × count(legal targets)) z perspektivy our_color.
-
-    Pseudo-legal mobility (pin/check ignored). KISS — search to vyřeší přesněji
-    než eval, eval má být **rychlý**. Standardní úroveň "Stockfish mobility area".
-
-    **Logika**:
-      1. Pro každou figuru na desce vezmi její pseudo-legal attacks bitboard
-         (`board.attacks_mask(sq)` → int).
-      2. Filtr přes `& ~own_occupied` odstraní pole obsazená vlastními figurami
-         (na ně nelze táhnout). Empty squares + enemy pieces (capture targets)
-         zůstanou.
-      3. Popcount přes `int.bit_count()` → počet legal target squares.
-      4. Bonus = weight[piece_type] × count, sign + naše / − jejich.
-
-    Pawn a King mají weight 0 → skip optimalizace (jejich mobility pokrývají
-    pawn structure / king safety features, ne tato).
-
-    **Performance**: ~30 piece iterací × (1× bitboard lookup + 1× bitwise AND +
-    1× popcount). V Pythonu ~stejně drahé jako PSQT lookup (oba O(pieces)).
-    Search budget se zkrátí o ~10-15 %, ale eval kvalita to vyváží (analogie
-    PSQT z v3.3).
-    """
-    score = 0
-    # Bitboardy obsazenosti per barva — cache mimo loop, jeden lookup za eval.
-    our_occupied = board.occupied_co[our_color]
-    their_occupied = board.occupied_co[not our_color]
-    not_our = ~our_occupied  # bitboard NOT-naše (pro filter naših attacks)
-    not_their = ~their_occupied  # symetricky pro jejich
-
-    for sq, piece in board.piece_map().items():
-        pt = piece.piece_type
-        weight = _MOBILITY_WEIGHTS[pt]
-        if weight == 0:
-            continue  # pawn/king → mobility weight 0, skip lookup
-
-        # Pseudo-legal attacks bitboard pro tuto figuru.
-        attacks_bb = board.attacks_mask(sq)
-        if piece.color == our_color:
-            # Naše figura: filter pryč naše vlastní obsazená pole.
-            count = (attacks_bb & not_our).bit_count()
-            score += weight * count
-        else:
-            # Jejich figura: symetricky filter jejich own pieces.
-            count = (attacks_bb & not_their).bit_count()
-            score -= weight * count
-
-    return score
-
-
 def _endgame_bonus(board: chess.Board) -> int:
     """Endgame king-tropism bonus z perspektivy strany na tahu (stm)."""
     our_color = board.turn
@@ -625,12 +515,9 @@ def _endgame_bonus(board: chess.Board) -> int:
 def _evaluate_for_side_to_move(board: chess.Board) -> int:
     """Statická eval z perspektivy strany na tahu.
 
-    **v3.4 změna**: přidán `_mobility_score` (pseudo-legal moves count, weighted).
-    Pořadí accumulace: material + PSQT (tapered) + mobility + check bonus + endgame
-    king-tropism.
-
-    **v3.3 retrospektiva**: `_material_balance` → `_material_plus_psqt` (material + PSQT
-    tapered v jednom passu).
+    **v3.3 změna**: `_material_balance` → `_material_plus_psqt` (material + PSQT
+    tapered v jednom passu). Zbytek (check bonus, endgame king-tropism) 1:1
+    z v3.2.
     """
     if board.is_checkmate():
         return -_MATE_SCORE
@@ -638,7 +525,6 @@ def _evaluate_for_side_to_move(board: chess.Board) -> int:
         return 0
 
     score = _material_plus_psqt(board, board.turn)
-    score += _mobility_score(board, board.turn)  # v3.4 NEW
     if board.is_check():
         score -= _CHECK_BONUS
     score += _endgame_bonus(board)

@@ -28,8 +28,8 @@ Když chceš přidat feature, polož si otázku: *patří tahle technika ještě
 | **Strop — eval** | Klasické features: material, PSQT (piece-square tables), mobility, king safety, pawn structure, endgame king-tropism. **Mimo princip:** NNUE / neural net eval (jiné paradigma — patří do samostatného „NNUE" enginu). |
 | **Strop — search** | Negamax + α-β + quiescence + standardní enhancements: iterative deepening, transposition table, PV move ordering, MVV-LVA, killer moves, history heuristic, aspiration windows, null move pruning, LMR (Late Move Reductions), futility pruning, SEE (Static Exchange Evaluation). **Mimo princip:** MCTS (Monte-Carlo Tree Search — jiné paradigma). |
 | **Strop — knowledge** | **Mimo princip:** opening book (Polyglot .bin), endgame tablebases (Syzygy). Patří k samostatným enginům typu „Booked v0" / „Tablebase v0", které delegujou na Minimax mimo book/tb. |
-| **Aktuální** | v3.3 — má: depth 2+ID + α-β + quiescence + endgame king-tropism + TT + PV + killer/history + **PSQT tapered eval (PeSTO)**. **Sparring +413 Elo nad v3.2** (decisive, 100 partií). |
-| **Snapshoty** | v2.7 (textbook depth-2 + MVV-LVA, ~1183 Elo), v3.1 (decisive TT/PV milestone, ~1225 Elo), v3.2 (pre-PSQT baseline). |
+| **Aktuální** | v3.4 — má: depth 2+ID + α-β + quiescence + endgame king-tropism + TT + PV + killer/history + PSQT tapered eval (PeSTO) + **mobility eval (pseudo-legal)**. **Sparring +191 Elo nad v3.3** (decisive, 100 partií). Kumulativně +604 Elo nad v3.2 (PSQT + mobility eval). |
+| **Snapshoty** | v2.7 (textbook depth-2 + MVV-LVA), v3.1 (decisive TT/PV milestone), v3.2 (pre-PSQT eval baseline), v3.3 (pre-mobility, PSQT only). |
 
 ## Pravidla pro evoluci
 

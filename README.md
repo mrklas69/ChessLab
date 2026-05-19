@@ -25,10 +25,11 @@ Osobní šachová laboratoř — lokální Python aplikace s webovým UI, která
 - **Vlastní enginy** — UCI binárky generované z `chesslab.engines.*` přes `uv sync`, auto-discovery v Play i Aréně, sdílená UCI smyčka (`engines/_protocol.py`). Discovery endpoint: `GET /api/engines/list`. Princip: každý engine reprezentuje konkrétní algoritmický stupeň, snapshoty drženy jako benchmark variant (ne mrtvá historie).
     - **v0: Random Mover** (`chesslab-random`) — náhodný legální tah.
     - **v1: Greedy Material** (`chesslab-greedy`) — 1-ply lookahead nad materiálem (Kaufman piece values + mate/stalemate/check bonusy). +300 Elo nad Random.
-    - **v3.3: Minimax — aktivní hlavní engine** (`chesslab-minimax`) — negamax + α-β + quiescence search (captures + non-capture checks, cap 8/2 plies) + endgame king-tropism eval + iterative deepening + transposition table + PV move ordering + killer moves + history heuristic + **PSQT tapered eval (PeSTO)**. **+413 Elo brutálně decisive** nad v3.2 (n=100, score 91.5%, CI [+291, +535] @ 0.10s/tah).
+    - **v3.4: Minimax — aktivní hlavní engine** (`chesslab-minimax`) — negamax + α-β + quiescence search (captures + non-capture checks, cap 8/2 plies) + endgame king-tropism eval + iterative deepening + transposition table + PV move ordering + killer moves + history heuristic + PSQT tapered eval (PeSTO) + **mobility eval (pseudo-legal)**. **+191 Elo decisive** nad v3.3 (n=100, score 75%, CI [+112, +269] @ 0.10s/tah). Kumulativně +604 Elo nad v3.2.
     - **v2.7: Minimax (snapshot)** (`chesslab-minimax-v27`) — textbook depth 2 + α-β + endgame eval + quiescence (captures) + MVV-LVA. ≥ +636 Elo nad Greedy (20-0-0 sweep, lower bound). Drženo jako *čistý minimax* benchmark.
     - **v3.1: Minimax (snapshot)** (`chesslab-minimax-v31`) — v2.8 + iterative deepening + transposition table + PV move ordering. Drženo jako *decisive TT/PV milestone* benchmark před killer/history tweaky.
     - **v3.2: Minimax (snapshot)** (`chesslab-minimax-v32`) — v3.1 + killer moves + history heuristic (quiet move ordering). Drženo jako *pre-PSQT eval baseline* — sparring +413 Elo gap proti v3.3 je decisive důkaz síly PSQT v Pythonu.
+    - **v3.3: Minimax (snapshot)** (`chesslab-minimax-v33`) — v3.2 + PSQT tapered eval. Drženo jako *pre-mobility baseline* — sparring +191 Elo gap proti v3.4 dokumentuje effect mobility eval.
 - **OpenAPI dokumentace** na `/docs`, health endpoint na `/health`.
 
 Roadmapa viz [TODO.md](TODO.md) a [IDEAS.md](IDEAS.md).
