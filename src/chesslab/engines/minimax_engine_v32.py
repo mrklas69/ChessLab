@@ -1,49 +1,60 @@
-"""ChessLab Engine v3.3: ID + TT + PV + Killer/History + **PSQT tapered eval (PeSTO)**.
+"""ChessLab Engine v3.2 (snapshot): ID + TT + PV + Killer Moves + History Heuristic.
 
-**Klíčová změna oproti v3.2**: rozšířena evaluation function o **PSQT (Piece-Square
-Tables) s tapered eval**:
+**Zamražený snapshot v3.2** — slouží jako baseline pro sparring proti novějším
+verzím (v3.3+). Engine_id ``chesslab-minimax-v32`` v ratings DB drží historický
+rating; engine_id ``chesslab-minimax`` je vždy "current ChessLab minimax"
+(postupně přepisovaný novou verzí, aktuálně v3.3 s PSQT tapered eval).
 
-- **PeSTO tabulky**: 12 tabulek (6 piece types × 2 phases = midgame/endgame),
-  hodnoty převzaty z Ronald Friederich's "PeSTO's Evaluation Function" (veřejné,
-  defacto standard pro toy enginy). Tabulky reprezentují positional bonus
-  (centralization, king safety v MG, king activity v EG, pawn advancement, …)
-  v centipawnech přidaných nad base material.
-- **Phase computation**: lerp factor mezi MG a EG dle non-pawn-non-king material
-  na desce. Phase weights `KNIGHT=1, BISHOP=1, ROOK=2, QUEEN=4`. Startovní
-  pozice = phase 24 (max), čistá KvK koncovka = phase 0. Tapered blend:
-  `score = (mg * phase + eg * (PHASE_MAX - phase)) / PHASE_MAX`.
-- **Index lookup**: PeSTO tabulky jsou zapsané "top-down" (index 0 = a8, 63 = h1).
-  Pro bílého `idx = chess.square_mirror(sq)` (flip rank), pro černého `idx = sq`
-  přímo (symetrie z perspektivy vlastní barvy).
+Logika je 1:1 kopie ``minimax_engine.py`` ze stavu před v3.3 — viz git
+historie commitu, který tento snapshot vytvořil.
 
-**Cíl v3.3**: PSQT je textbook HCE feature s odhadovaným ziskem +50-100 Elo
-v solid enginech. V Pythonu / našem rozsahu očekáváme menší (eval pass je nyní
-~2× drahší než pure material → search dosáhne nižší depth v daném budgetu).
-Per [[feedback-killer-history-weak-in-python]] eval features jsou bigger win
-než move ordering tweaks.
+---
 
-**Coexistence s `_endgame_bonus`** (king tropism z v2.5): záměrně **ponecháno**.
-PeSTO eg king table favorizuje centrum (king activity), `_endgame_bonus` táhne
-soupeřova krále k okraji + našeho do těsné blízkosti — částečný overlap, ale
-zachycují různé aspekty. První iter neoptimalizovat předčasně, vyhodnotit po
-sparringu.
+**Klíčová změna oproti v3.1**: přidány dva mechanismy pro **quiet move ordering**:
 
-**Plumbing oproti v3.2**:
-- `_material_balance` → `_material_plus_psqt(board, our_color)`: single-pass
-  iterace `piece_map`, akumuluje (mg_score, eg_score, phase) zároveň, na konci
-  blend dle phase. Material je sčítaný do obou (mg i eg) protože base value
-  je phase-invariantní.
-- `_evaluate_for_side_to_move` volá `_material_plus_psqt` místo `_material_balance`.
-- Žádné změny v search loopu / TT / killer/history. Pouze eval.
+- **Killer moves**: per-ply tabulka `_killers[ply][0..1]` — dva killer sloty na
+  ply (slot 0 = nejnovější, slot 1 = předchozí). Update na β-cutoff pro quiet
+  (= non-capture) moves: `[1] = [0]; [0] = move` (s dedup check). Při ordering
+  zkus killer moves PŘED ostatními quiet moves (po captures).
+- **History heuristic**: agregát `_history[(color, from, to)] += depth²` na
+  každý β-cutoff quiet move. Při ordering quiet moves: sort descending by history.
+  Reprezentuje "tyhle from/to páry historicky způsobily cutoffs" — heuristika
+  že silné quiet moves se opakují přes různé pozice (např. centralizing knight,
+  attacking outpost).
 
-**Vědomě skipnuto v v3.3** (kandidáti dál):
-- Mobility, king safety, pawn structure (additional HCE features)
-- Odstranění `_endgame_bonus` (re-vyhodnotit po sparringu — možná duplicate s eg king PSQT)
-- Aspiration windows / mate-distance / NMP
+**Cíl v3.2**: zlepšit ordering quiet moves nad MVV-LVA. PV/TT řeší prev best,
+MVV-LVA captures, killer/history quiet moves. Víc β-cutoffů → deeper search
+v stejném budgetu. Odhad +30-80 Elo nad v3.1 (Stockfish bez killer/history
+ztratí ~50 Elo per literatura).
+
+**Move ordering finální** (v `_order_moves_with_pv`):
+  1. PV move (z TT) — pokud existuje
+  2. Captures sorted MVV-LVA
+  3. Killer moves (slot 0, slot 1) — pokud quiet a ne v captures
+  4. Quiet moves (non-capture, non-killer) sorted descending by history score
+
+**Plumbing oproti v3.1**:
+- `_negamax` dostává nový param `ply` (start root = 0). Tracking "depth from
+  root" — na rozdíl od `depth` (= remaining depth). Killer table indexed by
+  ply.
+- Killer/history update jen v β-cutoff větvi (`if alpha >= beta: ... break`)
+  a jen pro quiet moves (capture moves jsou už MVV-LVA-orderované, killer/history
+  tam nepomáhá).
+- `_killers: list[list[chess.Move | None]]` preallocated size `_MAX_PLY=64`.
+- `_history: dict[(bool, int, int), int]` — klíč `(color, from_sq, to_sq)`.
+- Lifetime: **clear na začátku každého `choose_move`** (KISS, standard pro toy
+  enginy). Per-search semantika, ID iterace ho sdílejí. Žádný stale data risk
+  mezi tahy.
+
+**Vědomě skipnuto v v3.2** (kandidáti na v3.3+):
+- Aspiration windows
+- Mate-distance scoring
+- Null move pruning
+- SEE pruning v quiescence
 - NNUE eval / opening book
 
-Vše ostatní (search, quiescence, MVV-LVA, endgame_bonus, TT, PV, killer/history,
-time management) **1:1 z v3.2** — viz minimax_engine_v32.py snapshot.
+Vše ostatní (eval, quiescence, MVV-LVA, endgame, TT, PV ordering, time
+management) **1:1 z v3.1** — viz minimax_engine_v31.py snapshot.
 
 Random tie-break: stejně jako v2.x/v3.x.
 """
@@ -58,7 +69,7 @@ import chess
 
 from chesslab.engines._protocol import run_uci_loop
 
-ENGINE_NAME = "ChessLab Minimax v3.3"
+ENGINE_NAME = "ChessLab Minimax v3.2 (snapshot)"
 ENGINE_AUTHOR = "Jan Mrklas"
 
 # === ID + TIME MANAGEMENT (1:1 z v3.0/v3.1) ==================================
@@ -94,194 +105,6 @@ _ENDGAME_MATERIAL_THRESHOLD = 1300
 _ENDGAME_MIN_ADVANTAGE = 100
 _KING_EDGE_BONUS_PER_SQUARE = 12
 _KING_PROXIMITY_BONUS_PER_SQUARE = 3
-
-# === PSQT (PeSTO tapered eval) — v3.3 nové ===================================
-#
-# Tabulky převzaty z Ronald Friederich's "PeSTO's Evaluation Function"
-# (Chess Programming Wiki, public domain). Defacto standard pro toy enginy.
-# Hodnoty jsou v centipawnech, reprezentují POSITIONAL BONUS nad base material
-# (NE materiál samotný — to drží `_PIECE_VALUES`).
-#
-# Konvence indexů: tabulka[0] = a8 (top-left z white perspective),
-# tabulka[7] = h8, tabulka[56] = a1, tabulka[63] = h1. Tj. první řádek je
-# osmá řada (kde běžně stojí bílá těžká figura na startu). Tento "top-down"
-# zápis odpovídá normálnímu pohledu šachisty.
-#
-# Pro lookup:
-#   - bílá figura na square S → idx = chess.square_mirror(S)  (flip rank: a1↔a8)
-#   - černá figura na square S → idx = S  (přímý lookup; symetrie perspective)
-#
-# Verifikace symetrie: bílý pěšec na e7 (chess.E7=52) → idx = mirror(52)=12.
-# Černý pěšec na e2 (chess.E2=12) → idx = 12. Stejný PSQT slot = stejný bonus
-# (oba "před promocí z vlastního pohledu").
-
-# Pawn — MG: vysoký push bonus na 7. řadě, mírné centralizovaní;
-#        EG: extrémně vysoký push bonus (passed pawn = velká hodnota)
-_PSQT_MG_PAWN = [
-      0,   0,   0,   0,   0,   0,   0,   0,
-     98, 134,  61,  95,  68, 126,  34, -11,
-     -6,   7,  26,  31,  65,  56,  25, -20,
-    -14,  13,   6,  21,  23,  12,  17, -23,
-    -27,  -2,  -5,  12,  17,   6,  10, -25,
-    -26,  -4,  -4, -10,   3,   3,  33, -12,
-    -35,  -1, -20, -23, -15,  24,  38, -22,
-      0,   0,   0,   0,   0,   0,   0,   0,
-]
-_PSQT_EG_PAWN = [
-      0,   0,   0,   0,   0,   0,   0,   0,
-    178, 173, 158, 134, 147, 132, 165, 187,
-     94, 100,  85,  67,  56,  53,  82,  84,
-     32,  24,  13,   5,  -2,   4,  17,  17,
-     13,   9,  -3,  -7,  -7,  -8,   3,  -1,
-      4,   7,  -6,   1,   0,  -5,  -1,  -8,
-     13,   8,   8,  10,  13,   0,   2,  -7,
-      0,   0,   0,   0,   0,   0,   0,   0,
-]
-
-# Knight — silně preferuje centrum (rim = bad), především v MG.
-_PSQT_MG_KNIGHT = [
-   -167, -89, -34, -49,  61, -97, -15,-107,
-    -73, -41,  72,  36,  23,  62,   7, -17,
-    -47,  60,  37,  65,  84, 129,  73,  44,
-     -9,  17,  19,  53,  37,  69,  18,  22,
-    -13,   4,  16,  13,  28,  19,  21,  -8,
-    -23,  -9,  12,  10,  19,  17,  25, -16,
-    -29, -53, -12,  -3,  -1,  18, -14, -19,
-   -105, -21, -58, -33, -17, -28, -19, -23,
-]
-_PSQT_EG_KNIGHT = [
-    -58, -38, -13, -28, -31, -27, -63, -99,
-    -25,  -8, -25,  -2,  -9, -25, -24, -52,
-    -24, -20,  10,   9,  -1,  -9, -19, -41,
-    -17,   3,  22,  22,  22,  11,   8, -18,
-    -18,  -6,  16,  25,  16,  17,   4, -18,
-    -23,  -3,  -1,  15,  10,  -3, -20, -22,
-    -42, -20, -10,  -5,  -2, -20, -23, -44,
-    -29, -51, -23, -15, -22, -18, -50, -64,
-]
-
-# Bishop — long diagonals + mírné centrum.
-_PSQT_MG_BISHOP = [
-    -29,   4, -82, -37, -25, -42,   7,  -8,
-    -26,  16, -18, -13,  30,  59,  18, -47,
-    -16,  37,  43,  40,  35,  50,  37,  -2,
-     -4,   5,  19,  50,  37,  37,   7,  -2,
-     -6,  13,  13,  26,  34,  12,  10,   4,
-      0,  15,  15,  15,  14,  27,  18,  10,
-      4,  15,  16,   0,   7,  21,  33,   1,
-    -33,  -3, -14, -21, -13, -12, -39, -21,
-]
-_PSQT_EG_BISHOP = [
-    -14, -21, -11,  -8,  -7,  -9, -17, -24,
-     -8,  -4,   7, -12,  -3, -13,  -4, -14,
-      2,  -8,   0,  -1,  -2,   6,   0,   4,
-     -3,   9,  12,   9,  14,  10,   3,   2,
-     -6,   3,  13,  19,   7,  10,  -3,  -9,
-    -12,  -3,   8,  10,  13,   3,  -7, -15,
-    -14, -18,  -7,  -1,   4,  -9, -15, -27,
-    -23,  -9, -23,  -5,  -9, -16,  -5, -17,
-]
-
-# Rook — silně preferuje 7. řadu (penetrace) + otevřené sloupce v centru.
-_PSQT_MG_ROOK = [
-     32,  42,  32,  51,  63,   9,  31,  43,
-     27,  32,  58,  62,  80,  67,  26,  44,
-     -5,  19,  26,  36,  17,  45,  61,  16,
-    -24, -11,   7,  26,  24,  35,  -8, -20,
-    -36, -26, -12,  -1,   9,  -7,   6, -23,
-    -45, -25, -16, -17,   3,   0,  -5, -33,
-    -44, -16, -20,  -9,  -1,  11,  -6, -71,
-    -19, -13,   1,  17,  16,   7, -37, -26,
-]
-_PSQT_EG_ROOK = [
-     13,  10,  18,  15,  12,  12,   8,   5,
-     11,  13,  13,  11,  -3,   3,   8,   3,
-      7,   7,   7,   5,   4,  -3,  -5,  -3,
-      4,   3,  13,   1,   2,   1,  -1,   2,
-      3,   5,   8,   4,  -5,  -6,  -8, -11,
-     -4,   0,  -5,  -1,  -7, -12,  -8, -16,
-     -6,  -6,   0,   2,  -9,  -9, -11,  -3,
-     -9,   2,   3,  -1,  -5, -13,   4, -20,
-]
-
-# Queen — vyrovnaná, v MG nepenalizuje předčasný vývin extrémně.
-_PSQT_MG_QUEEN = [
-    -28,   0,  29,  12,  59,  44,  43,  45,
-    -24, -39,  -5,   1, -16,  57,  28,  54,
-    -13, -17,   7,   8,  29,  56,  47,  57,
-    -27, -27, -16, -16,  -1,  17,  -2,   1,
-     -9, -26,  -9, -10,  -2,  -4,   3,  -3,
-    -14,   2, -11,  -2,  -5,   2,  14,   5,
-    -35,  -8,  11,   2,   8,  15,  -3,   1,
-     -1, -18,  -9,  10, -15, -25, -31, -50,
-]
-_PSQT_EG_QUEEN = [
-     -9,  22,  22,  27,  27,  19,  10,  20,
-    -17,  20,  32,  41,  58,  25,  30,   0,
-    -20,   6,   9,  49,  47,  35,  19,   9,
-      3,  22,  24,  45,  57,  40,  57,  36,
-    -18,  28,  19,  47,  31,  34,  39,  23,
-    -16, -27,  15,   6,   9,  17,  10,   5,
-    -22, -23, -30, -16, -16, -23, -36, -32,
-    -33, -28, -22, -43,  -5, -32, -20, -41,
-]
-
-# King — KLÍČOVÁ tapered tabulka. MG: silně preferuje roh (krytí za pěšci);
-#        EG: centrum (king activity, support of passed pawns).
-_PSQT_MG_KING = [
-    -65,  23,  16, -15, -56, -34,   2,  13,
-     29,  -1, -20,  -7,  -8,  -4, -38, -29,
-     -9,  24,   2, -16, -20,   6,  22, -22,
-    -17, -20, -12, -27, -30, -25, -14, -36,
-    -49,  -1, -27, -39, -46, -44, -33, -51,
-    -14, -14, -22, -46, -44, -30, -15, -27,
-      1,   7,  -8, -64, -43, -16,   9,   8,
-    -15,  36,  12, -54,   8, -28,  24,  14,
-]
-_PSQT_EG_KING = [
-    -74, -35, -18, -18, -11,  15,   4, -17,
-    -12,  17,  14,  17,  17,  38,  23,  11,
-     10,  17,  23,  15,  20,  45,  44,  13,
-     -8,  22,  24,  27,  26,  33,  26,   3,
-    -18,  -4,  21,  24,  27,  23,   9, -11,
-    -19,  -3,  11,  21,  23,  16,   7,  -9,
-    -27, -11,   4,  13,  14,   4,  -5, -17,
-    -53, -34, -21, -11, -28, -14, -24, -43,
-]
-
-# Lookupy podle piece_type. python-chess: PAWN=1, KNIGHT=2, BISHOP=3, ROOK=4,
-# QUEEN=5, KING=6. Použijeme dict (jen 6 záznamů, hot path je `_material_plus_psqt`
-# kde děláme dict lookup — Python dict O(1), srovnatelné s list lookupem pro
-# malé n).
-_PSQT_MG: dict[chess.PieceType, list[int]] = {
-    chess.PAWN:   _PSQT_MG_PAWN,
-    chess.KNIGHT: _PSQT_MG_KNIGHT,
-    chess.BISHOP: _PSQT_MG_BISHOP,
-    chess.ROOK:   _PSQT_MG_ROOK,
-    chess.QUEEN:  _PSQT_MG_QUEEN,
-    chess.KING:   _PSQT_MG_KING,
-}
-_PSQT_EG: dict[chess.PieceType, list[int]] = {
-    chess.PAWN:   _PSQT_EG_PAWN,
-    chess.KNIGHT: _PSQT_EG_KNIGHT,
-    chess.BISHOP: _PSQT_EG_BISHOP,
-    chess.ROOK:   _PSQT_EG_ROOK,
-    chess.QUEEN:  _PSQT_EG_QUEEN,
-    chess.KING:   _PSQT_EG_KING,
-}
-
-# Phase weights (PeSTO standard). Pěšci a králové neovlivňují phase — fáze hry
-# se klasicky určuje podle "kolik těžkých figur ještě na desce je".
-# Startovní pozice: 4*N (=4) + 4*B (=4) + 4*R*2 (=8) + 2*Q*4 (=8) = 24.
-_PSQT_PHASE_WEIGHT: dict[chess.PieceType, int] = {
-    chess.PAWN:   0,
-    chess.KNIGHT: 1,
-    chess.BISHOP: 1,
-    chess.ROOK:   2,
-    chess.QUEEN:  4,
-    chess.KING:   0,
-}
-_PSQT_PHASE_MAX = 24
 
 # === QUIESCENCE LIMITS (1:1 z v2.6/v2.8/v3.x) ================================
 
@@ -386,11 +209,7 @@ def _history_score(color: bool, move: chess.Move) -> int:
 
 
 def _material_balance(board: chess.Board, our_color: chess.Color) -> int:
-    """Material diff (naše - soupeř) v centipawnech.
-
-    Používá se v `_endgame_bonus` (decision: máme alespoň `_ENDGAME_MIN_ADVANTAGE`?).
-    Pro hlavní eval se používá `_material_plus_psqt` (single-pass material + PSQT).
-    """
+    """Material diff (naše - soupeř) v centipawnech."""
     score = 0
     for piece in board.piece_map().values():
         value = _PIECE_VALUES[piece.piece_type]
@@ -399,74 +218,6 @@ def _material_balance(board: chess.Board, our_color: chess.Color) -> int:
         else:
             score -= value
     return score
-
-
-def _material_plus_psqt(board: chess.Board, our_color: chess.Color) -> int:
-    """Material + PSQT tapered eval v jednom passu přes `piece_map`.
-
-    **Logika**:
-      1. Pro každou figuru na desce přičti k `mg` a `eg` její material value
-         (base material je phase-invariantní, ale potřebujeme ho v obou
-         akumulátorech pro finální blend).
-      2. Přičti PSQT bonus z MG i EG tabulky (lookup index závisí na barvě:
-         bílá flipne rank, černá přímý).
-      3. Sleduj `phase` = sum non-pawn-non-king material weights. Startovní
-         pozice = 24 (max), čistá KvK = 0.
-      4. Final blend: `(mg * phase + eg * (PHASE_MAX - phase)) // PHASE_MAX`.
-
-    Znaménko: `mg/eg` jsou akumulované z perspektivy `our_color` (naše figury
-    se přičítají, soupeřovy odečítají), takže blend je rovnou skóre které
-    chceme vrátit.
-
-    **Edge cases**:
-      - Pokud na desce zbyly jen pěšci + králové: `phase = 0`, pure eg eval.
-      - Pokud někdo má promotion → 9 dam (theoretical max): `phase` může
-        přerůst 24 (9 dam * 4 = 36). Clamp na `_PSQT_PHASE_MAX` aby blend
-        zůstal sane (jinak by `mg * phase / 24` přerostlo a mg bonus by
-        dominoval i v koncovce s materiálovou převahou).
-
-    Cost: O(pieces) ~32 piece iterations, 4 dict lookupů + 2 list lookupů per
-    iteration. V Pythonu ~2× drahší než pure `_material_balance` — search
-    v daném budgetu dosáhne mírně nižší depth, ale eval kvalita to (snad)
-    vyváží. Měřitelné v sparringu vs v3.2.
-    """
-    mg = 0
-    eg = 0
-    phase = 0
-    # piece_map() vrací dict {square: Piece}. Iterace přes items je rychlejší
-    # než lookup `board.piece_at(sq)` pro každý square v range(64).
-    for sq, piece in board.piece_map().items():
-        pt = piece.piece_type
-        material = _PIECE_VALUES[pt]
-        # Sign: +1 pokud figura naše, -1 pokud soupeřova. Eliminuje větvení
-        # uvnitř loopu (klasický branch elimination trick).
-        sign = 1 if piece.color == our_color else -1
-
-        # Material — phase-invariantní (do obou akumulátorů stejně).
-        mg += sign * material
-        eg += sign * material
-
-        # PSQT lookup. Bílá figura na S → PeSTO index = mirror(S) (flip rank).
-        # Černá figura na S → přímý index (symetrie z perspektivy vlastní barvy).
-        if piece.color == chess.WHITE:
-            idx = chess.square_mirror(sq)
-        else:
-            idx = sq
-        mg += sign * _PSQT_MG[pt][idx]
-        eg += sign * _PSQT_EG[pt][idx]
-
-        # Phase weight (pawns/kings = 0, takže promotion-safe pro pěšce).
-        phase += _PSQT_PHASE_WEIGHT[pt]
-
-    # Clamp phase pro případ multiple promotions (9 queens = phase 36 > 24).
-    # Bez clampu by tapered blend dal `mg * 36 / 24 = 1.5 * mg` (mg score
-    # by se nadhodnotil). Standardní safeguard.
-    if phase > _PSQT_PHASE_MAX:
-        phase = _PSQT_PHASE_MAX
-
-    # Tapered blend: mg má váhu `phase / PHASE_MAX`, eg `(PHASE_MAX - phase) / PHASE_MAX`.
-    # Integer divize na konci — ztráta přesnosti < 1 cp, nezavadná.
-    return (mg * phase + eg * (_PSQT_PHASE_MAX - phase)) // _PSQT_PHASE_MAX
 
 
 def _endgame_bonus(board: chess.Board) -> int:
@@ -503,18 +254,13 @@ def _endgame_bonus(board: chess.Board) -> int:
 
 
 def _evaluate_for_side_to_move(board: chess.Board) -> int:
-    """Statická eval z perspektivy strany na tahu.
-
-    **v3.3 změna**: `_material_balance` → `_material_plus_psqt` (material + PSQT
-    tapered v jednom passu). Zbytek (check bonus, endgame king-tropism) 1:1
-    z v3.2.
-    """
+    """Statická eval z perspektivy strany na tahu."""
     if board.is_checkmate():
         return -_MATE_SCORE
     if board.is_game_over():
         return 0
 
-    score = _material_plus_psqt(board, board.turn)
+    score = _material_balance(board, board.turn)
     if board.is_check():
         score -= _CHECK_BONUS
     score += _endgame_bonus(board)

@@ -2,6 +2,74 @@
 
 Hotové úkoly. Nejnovější nahoře.
 
+## 2026-05-19 — Minimax v3.3: PSQT tapered eval (+413 Elo, brutálně decisive)
+
+**Cíl**: rozšířit eval o klasickou textbook HCE feature — Piece-Square Tables.
+Per [[feedback-killer-history-weak-in-python]] eval features jsou v Pythonu
+bigger win než move ordering tweaks. PSQT je nejjednodušší a defacto standard
+prerekvizita pro mobility / king safety / pawn structure.
+
+### Implementace v3.3 (`minimax_engine.py`)
+
+**PeSTO tabulky** (Ronald Friederich, public domain — defacto standard pro toy
+enginy): 12 tabulek (6 piece types × MG/EG) jako module-level konstanty. Hodnoty
+v centipawnech, reprezentují POSITIONAL BONUS nad base material.
+
+**Tapered eval**:
+- Phase = sum non-pawn-non-king material weights. `KNIGHT=1, BISHOP=1, ROOK=2,
+  QUEEN=4`. Startovní pozice = phase 24, čistá KvK = 0.
+- Blend: `score = (mg * phase + eg * (24 - phase)) // 24`.
+- Promotion safeguard: clamp `phase ≤ 24` (9 dam by jinak nadhodnotilo mg).
+
+**Single-pass eval** (`_material_plus_psqt`): jedna iterace `piece_map`,
+akumuluje (mg, eg, phase) zároveň. Material se sčítá do obou akumulátorů
+(phase-invariantní), PSQT lookup podle barvy:
+- bílá: `idx = chess.square_mirror(sq)` (flip rank)
+- černá: `idx = sq` přímý (symetrie z perspektivy vlastní barvy).
+
+**Coexistence s `_endgame_bonus`** (king tropism z v2.5): záměrně **ponecháno**.
+PeSTO eg king table favorizuje centrum, `_endgame_bonus` táhne soupeřova krále
+k okraji + našeho do těsné blízkosti — částečný overlap, ale různé aspekty.
+Re-vyhodnocení po sparringu.
+
+**Snapshot v3.2** (`minimax_engine_v32.py` + `chesslab-minimax-v32` entry) jako
+baseline.
+
+### Smoke test
+
+- UCI handshake + `position startpos go movetime 200` → bestmove `g1f3` (sane opening).
+- Mate-in-1 endgame pozice → bestmove `e1e8` (rook na 8. řadu, sane).
+- Po `1.e4 e5` → bestmove `g1f3` (textbook).
+
+### Sparring v3.3 vs v3.2 — 100 partií @ 0.10s
+
+Throw-away skript `C:\Users\mrkla\AppData\Local\Temp\sparring_v33_v32.py`
+(5×20 partií, agregát). Wall-clock cca 50 minut.
+
+| metrika | hodnota |
+|---|---|
+| W/D/L | 89 / 5 / 6 |
+| score | 91.5 % |
+| Elo diff | **+413** |
+| 95 % CI | **[+291, +535]** — decisive |
+| Konzistence per round | 85, 90, 95, 97.5, 90 % (žádný outlier) |
+
+**Brutálně decisive** — far nad očekáváním +50-100 Elo z literatury. V Pythonu
+eval features dělají extrémní rozdíl — viz [[feedback-eval-features-huge-in-python]].
+
+### Decision: keep v3.3, snapshot v3.2 zachován
+
+v3.2 snapshot je decisive milestone (proti něj měřená skoková změna +413 Elo
+přesahuje vše předchozí — v3.1 byl +56 Elo nad v2.8, v3.2 byl +24 Elo nad v3.1).
+Drží se jako benchmark pre-PSQT baseline.
+
+**Follow-up kandidáti**:
+- Mobility, king safety, pawn structure (další HCE eval features — patří pod
+  Minimax dle ENGINES.md). Po PSQT triumfu prioritní.
+- Re-vyhodnotit potřebu `_endgame_bonus` (možná duplicate s eg king PSQT).
+- v3.x search enhancements (aspiration / mate-distance / NMP) odsunuto —
+  eval features mají větší ELO/LOC ratio v Pythonu.
+
 ## 2026-05-19 — Rekapitulace + úklid: definice principu enginů, smazání dead-end snapshotů
 
 **Cíl:** Po sérii engine experimentů (v2.7 → v3.2) udělat audit projektu a srovnat

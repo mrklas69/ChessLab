@@ -24,6 +24,7 @@ chesslab-greedy = "chesslab.engines.greedy_engine:main"
 chesslab-minimax = "chesslab.engines.minimax_engine:main"
 chesslab-minimax-v27 = "chesslab.engines.minimax_engine_v27:main"
 chesslab-minimax-v31 = "chesslab.engines.minimax_engine_v31:main"
+chesslab-minimax-v32 = "chesslab.engines.minimax_engine_v32:main"
 
 [build-system]
 requires = ["uv_build>=0.11.14,<0.12.0"]
