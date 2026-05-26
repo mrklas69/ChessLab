@@ -1,4 +1,4 @@
-"""Taktický correctness test pro v3.2 (chytí TT cache bugy).
+"""Taktický correctness test pro ChessLab Minimax enginy (chytí TT cache bugy).
 
 Cíl: ujistit se že TT/PV ordering neporušil minimax správnost. Spustí engine
 na sadě známých taktických pozic s longer budget (500ms = bohatě na depth 3-4)
@@ -7,9 +7,18 @@ a assertne že vrátí očekávaný winning move.
 Pokud TT score je špatně cached (např. bad flag handling), engine může minout
 mate-in-N nebo materiálovou výhru.
 
-Pozice jsou jednoduché (mate-in-1, mate-in-2, jednoduchý capture) — nic, co
-by depth-3 minimax neměl vidět. Pokud v3.2 mine cokoli, co v3.0/v2.8 vidělo
-→ TT bug.
+Pozice jsou jednoduché (mate-in-1, jednoduchý capture) — nic, co by depth-3
+minimax neměl vidět. Pokud engine mine cokoli z těchto → TT bug.
+
+Použití:
+    uv run python scripts/tactical_test.py [engine-id]
+
+`engine-id` default = `chesslab-minimax` (aktuální hlavní engine). Pro otestování
+snapshotu předej jeho ID, např.:
+    uv run python scripts/tactical_test.py chesslab-minimax-v33
+
+Cesta k binárce se resolvuje přes discovery aktivního venv (žádné hardcoded
+cesty) — funguje na libovolném stroji po `uv sync`.
 """
 
 from __future__ import annotations
@@ -20,7 +29,9 @@ import time
 import chess
 import chess.engine
 
-ENGINE_PATH = r"C:\Users\mrkla\source\ChessLab\.venv\Scripts\chesslab-minimax.exe"
+from chesslab.engines import EngineInfo, list_available_engines
+
+DEFAULT_ENGINE_ID = "chesslab-minimax"
 
 
 # Sada pozic: (jméno, FEN, množina očekávaných UCI tahů, čas v ms).
@@ -53,7 +64,15 @@ TACTICAL_CASES = [
 ]
 
 
-def run_case(name: str, fen: str, expected_moves: set[str], time_ms: int) -> bool:
+def find_engine(engine_id: str) -> EngineInfo:
+    """Najdi EngineInfo daného engine_id přes discovery aktivního venv."""
+    for e in list_available_engines():
+        if e.id == engine_id:
+            return e
+    raise SystemExit(f"Engine '{engine_id}' nenalezen — proveď `uv sync`.")
+
+
+def run_case(engine_path: str, name: str, fen: str, expected_moves: set[str], time_ms: int) -> bool:
     """Spustí engine na pozici a ověří že vrátí jeden z expected_moves."""
     board = chess.Board(fen)
     print(f"[{name}]")
@@ -61,7 +80,7 @@ def run_case(name: str, fen: str, expected_moves: set[str], time_ms: int) -> boo
     print(f"  Expected one of: {expected_moves}")
 
     started = time.monotonic()
-    with chess.engine.SimpleEngine.popen_uci(ENGINE_PATH) as engine:
+    with chess.engine.SimpleEngine.popen_uci(engine_path) as engine:
         result = engine.play(board, chess.engine.Limit(time=time_ms / 1000.0))
     elapsed = (time.monotonic() - started) * 1000.0
 
@@ -75,11 +94,14 @@ def run_case(name: str, fen: str, expected_moves: set[str], time_ms: int) -> boo
 
 
 def main() -> int:
-    print(f"=== Tactical correctness test ChessLab Minimax v3.2 ===\n")
+    # argv[1] = engine-id (volitelný), jinak aktuální hlavní engine.
+    engine_id = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_ENGINE_ID
+    engine = find_engine(engine_id)
+    print(f"=== Tactical correctness test {engine.name} ===\n")
 
     all_ok = True
     for name, fen, expected, time_ms in TACTICAL_CASES:
-        ok = run_case(name, fen, expected, time_ms)
+        ok = run_case(engine.path, name, fen, expected, time_ms)
         if not ok:
             all_ok = False
 

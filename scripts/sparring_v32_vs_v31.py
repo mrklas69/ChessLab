@@ -82,7 +82,9 @@ def main() -> int:
     print("=" * 70)
     print()
 
-    v32_path = find_engine("chesslab-minimax")  # alias pro current = v3.2
+    # Explicitní snapshoty — skript reprodukuje historický experiment v3.2 vs v3.1.
+    # (Dřív mířil na `chesslab-minimax` = "current", ale ten je dnes v3.4.)
+    v32_path = find_engine("chesslab-minimax-v32")
     v31_path = find_engine("chesslab-minimax-v31")
     print(f"[engines]")
     print(f"  v3.2: {v32_path}")

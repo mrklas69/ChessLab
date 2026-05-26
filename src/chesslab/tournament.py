@@ -174,6 +174,7 @@ def _run_match_between(
                 round_number=pair_index * 1000 + game_index + 1,
             )
         finally:
+            # Cleanup engine subprocesses — i při výjimce. quit() je idempotentní.
             for eng in (eng_a, eng_b):
                 try:
                     eng.quit()
