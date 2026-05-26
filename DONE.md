@@ -2,6 +2,37 @@
 
 Hotové úkoly. Nejnovější nahoře.
 
+## 2026-05-26 — Setup 2. stroje (hejna) + %AUDIT:CODE & %AUDIT:DOCS
+
+**Kontext:** První spuštění projektu na stroji `hejna` (dosud jen `mrkla`). Pull z GitHubu, zprovoznění toolchainu, dva hloubkové audity s opravami.
+
+### Setup prostředí
+- Pull `origin/main`, lokální větev přejmenována `master` → `main` + upstream.
+- Nainstalován **uv 0.11.16** (`C:\Users\hejna\.local\bin`, standalone installer), `uv sync` → `.venv` s CPython 3.14.5 + 27 balíčků.
+- Stockfish na `C:\Program Files\Stockfish\...avx2.exe` (sedí na defaultní cestu, `STOCKFISH_PATH` netřeba).
+- Dev server ověřen (`/health` ok, discovery všech 8 enginů). Pozn.: `data/chesslab.db` ani Claude-memory se přes git nepřenášejí → ratings `null`, memory rekonstruována (viz níže).
+
+### %AUDIT:CODE — nálezy + opravy
+- 🔴 4 skripty (`{smoke,tactical}_test_v3{1,2}.py`) měly hardcoded cestu `C:\Users\mrkla\...\.venv\...exe` → na `hejna` spadaly.
+- 🟡 DRY: `smoke_v31`≡`v32`, `tactical_v31`≡`v32` (identické až na verzi); zavádějící version labely (testovaly current v3.4, ne v3.1/v3.2).
+- **Oprava:** konsolidace na 2 parametrizované skripty `scripts/smoke_test.py` + `scripts/tactical_test.py` (volitelný `engine-id`, default `chesslab-minimax`, path přes `find_engine()`/discovery). Smazány 4 staré. Ověřeno spuštěním — oba prošly.
+- 🟡 `sparring_v32_vs_v31.py` mířil na `chesslab-minimax` (=v3.4) → přesměrováno na snapshot `chesslab-minimax-v32` (reprodukuje deklarovaný experiment).
+- ⚪ `tournament.py:177` cleanup `except` doplněn izomorfní komentář (jako `arena.py:379`).
+- Čisté: žádné `mrkla`/`console.log`/debug print v `src/`; except handlery v `app.py` korektní; inventář enginů konzistentní s README/ENGINES.
+
+### %AUDIT:DOCS — nálezy + opravy
+- 🟡 **Dangling memory reference**: `ENGINES.md`/`IDEAS.md`/`DONE.md` odkazovaly na 3 Claude-memory + `MEMORY.md`, které na `hejna` chyběly (gitignored, nepřenesly se).
+- **Oprava:** rekonstruovány z faktů v `DONE.md`: [[feedback-eval-features-huge-in-python]], [[feedback-killer-history-weak-in-python]], [[feedback-engine-principle-over-rating]] + index `MEMORY.md`.
+- ⚪ `mrkla` temp cesty v `DONE.md` (ř. 48, 122) genericizovány na `%TEMP%\…`.
+- Čisté: cross-doc Elo čísla sedí (+604 = +413+191), chronologie newest-first OK, file-linky resolvují, bez překlepů.
+- **Drženo (oponentura):** README „Co umí" hutnost (korektní authored prose, restructure = churn) a Unix-path pozn. (šum ve Windows-only projektu).
+
+### Mimo scope (→ %CALIBRATE)
+- `CLAUDE.md`/`IDEAS.md` absolutní cesty na `mrkla` jsou dvoustrojový problém — slepý replace by rozbil `mrkla`. Zobecnit / přesunout mimo verzovaný `CLAUDE.md` až v %CALIBRATE.
+
+### Příště
+- v3.5: king safety / pawn structure eval (orthogonal k PSQT/mobility, viz [[feedback-eval-features-huge-in-python]]).
+
 ## 2026-05-19 — Minimax v3.4: Mobility eval (+191 Elo, decisive)
 
 **Cíl**: další HCE eval feature po PSQT triumfu. Pseudo-legal mobility area
@@ -45,7 +76,7 @@ Drobné drift mezi engine moves vs v3.3 = expected (eval shape se změnila).
 
 ### Sparring v3.4 vs v3.3 — 100 partií @ 0.10s
 
-Throw-away `C:\Users\mrkla\AppData\Local\Temp\sparring_v34_v33.py` (5×20 partií).
+Throw-away `%TEMP%\sparring_v34_v33.py` (5×20 partií).
 Wall-clock cca 50 minut.
 
 | metrika | hodnota |
@@ -119,7 +150,7 @@ baseline.
 
 ### Sparring v3.3 vs v3.2 — 100 partií @ 0.10s
 
-Throw-away skript `C:\Users\mrkla\AppData\Local\Temp\sparring_v33_v32.py`
+Throw-away skript `%TEMP%\sparring_v33_v32.py`
 (5×20 partií, agregát). Wall-clock cca 50 minut.
 
 | metrika | hodnota |
